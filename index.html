@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pi Robot Face</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: monospace;
+            color: #0f0;
+        }
+
+        /* --- THE FACE --- */
+        .face-container {
+            position: relative;
+            width: 80vw;
+            height: 60vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-evenly;
+        }
+
+        .eyes-row {
+            display: flex;
+            gap: 100px;
+        }
+
+        .eye {
+            width: 120px;
+            height: 120px;
+            background-color: #00ffcc;
+            border-radius: 50%;
+            box-shadow: 0 0 20px #00ffcc;
+            transition: all 0.3s ease;
+        }
+
+        /* Blink Animation */
+        .eye.blink { animation: blink 0.2s linear; }
+        @keyframes blink { 0% { height: 120px; } 50% { height: 10px; } 100% { height: 120px; } }
+
+        /* Thinking Animation (Eyes spin/pulse) */
+        .thinking .eye {
+            background-color: #ffaa00;
+            box-shadow: 0 0 30px #ffaa00;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+
+        /* Listening Animation (Eyes get bigger) */
+        .listening .eye {
+            background-color: #00ff00;
+            transform: scale(1.2);
+        }
+
+        /* --- THE MOUTH --- */
+        .mouth {
+            width: 200px;
+            height: 10px;
+            background-color: #00ffcc;
+            border-radius: 10px;
+            box-shadow: 0 0 10px #00ffcc;
+            transition: all 0.2s ease;
+        }
+
+        /* Speaking Animation (Mouth moves) */
+        .speaking .mouth {
+            animation: talk 0.3s infinite alternate;
+            background-color: #00ccff;
+        }
+        @keyframes talk {
+            0% { height: 10px; width: 200px; border-radius: 10px; }
+            100% { height: 50px; width: 150px; border-radius: 30%; }
+        }
+
+        /* --- DEBUG CAMERA FEED --- */
+        .camera-feed {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            border: 2px solid #333;
+            opacity: 0.8;
+        }
+        
+        #status-text { margin-top: 20px; font-size: 24px; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+
+    <div id="face" class="face-container">
+        <div class="eyes-row">
+            <div class="eye left"></div>
+            <div class="eye right"></div>
+        </div>
+        <div class="mouth"></div>
+    </div>
+
+    <div id="status-text">IDLE</div>
+
+    <!-- Live Camera Feed Overlay -->
+    <img src="/video_feed" class="camera-feed" alt="Robot Vision">
+
+    <script>
+        const face = document.getElementById('face');
+        const statusText = document.getElementById('status-text');
+        
+        // Random blinking
+        setInterval(() => {
+            if(!face.classList.contains('thinking')) {
+                const eyes = document.querySelectorAll('.eye');
+                eyes.forEach(eye => {
+                    eye.classList.add('blink');
+                    setTimeout(() => eye.classList.remove('blink'), 200);
+                });
+            }
+        }, 4000);
+
+        // Listen for status updates from Python
+        const evtSource = new EventSource("/status_feed");
+        evtSource.onmessage = function(event) {
+            const state = event.data; // e.g., "LISTENING", "SPEAKING"
+            statusText.innerText = state;
+            
+            // Reset classes
+            face.className = 'face-container';
+            
+            if(state === 'LISTENING') face.classList.add('listening');
+            if(state === 'THINKING') face.classList.add('thinking');
+            if(state === 'SPEAKING') face.classList.add('speaking');
+        };
+    </script>
+</body>
+</html>
