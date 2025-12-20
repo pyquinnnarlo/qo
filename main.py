@@ -56,7 +56,16 @@ def status_feed():
 def vision_loop():
     global current_scene_objects, video_frame
     model = YOLO(MODEL_PATH)
-    cap = cv2.VideoCapture(0)
+    # GStreamer pipeline for Raspberry Pi 5 Libcamera
+    gst_str = (
+        "libcamerasrc ! "
+        "video/x-raw, width=640, height=480, framerate=30/1 ! "
+        "videoconvert ! "
+        "video/x-raw, format=BGR ! "
+        "appsink"
+    )
+    cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+
 
     while True:
         ret, frame = cap.read()
