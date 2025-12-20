@@ -1,1 +1,84 @@
-arecord --device=hw:2,0 --format=S16_LE --rate=44100 -d 5 test.wav
+import speech_recognition as sr
+import requests
+import os
+import sys
+
+# --- CONFIGURATION ---
+OLLAMA_MODEL = "phi3:mini"  # Make sure you have run: ollama pull phi3:mini
+MIC_INDEX = 1               # Your USB Mic Index from previous steps
+
+def speak(text):
+    """Simple Text-to-Speech using espeak"""
+    print(f"Robot: {text}")
+    # -ven+m3 changes voice to male #3, -s150 is speed
+    safe_text = text.replace("'", "").replace('"', "")
+    os.system(f'espeak -ven+m3 -s150 "{safe_text}" 2>/dev/null')
+
+def listen():
+    """Listens for audio and converts to text"""
+    r = sr.Recognizer()
+    mic = sr.Microphone(device_index=MIC_INDEX)
+    
+    with mic as source:
+        # Dynamic thresholding helps if background is noisy
+        r.adjust_for_ambient_noise(source, duration=1)
+        r.dynamic_energy_threshold = True
+        
+        print("\nListening... (Speak now!)")
+        try:
+            # Listen for up to 10 seconds
+            audio = r.listen(source, timeout=10, phrase_time_limit=10)
+            print("Processing audio...")
+            
+            # Convert to text
+            text = r.recognize_google(audio).lower()
+            print(f"You said: {text}")
+            return text
+            
+        except sr.WaitTimeoutError:
+            print("Time out (No speech detected).")
+            return None
+        except sr.UnknownValueError:
+            print("Could not understand audio.")
+            return None
+        except sr.RequestError as e:
+            print(f"Google API Error: {e}")
+            return None
+
+def ask_ollama(prompt):
+    """Sends text to Ollama and gets response"""
+    url = "http://localhost:11434/api/generate"
+    data = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False
+    }
+    
+    try:
+        print("Thinking...")
+        response = requests.post(url, json=data)
+        if response.status_code == 200:
+            return response.json()['response']
+        else:
+            return f"Error from Ollama: {response.status_code}"
+    except Exception as e:
+        return f"Could not connect to Ollama. Is it running? Error: {e}"
+
+# --- MAIN LOOP ---
+if __name__ == "__main__":
+    speak("System ready. Waiting for input.")
+    
+    while True:
+        user_input = listen()
+        
+        if user_input:
+            # Check for exit command
+            if "stop" in user_input or "exit" in user_input:
+                speak("Goodbye.")
+                sys.exit()
+                
+            # Get AI Response
+            ai_reply = ask_ollama(user_input)
+            
+            # Speak Response
+            speak(ai_reply)
