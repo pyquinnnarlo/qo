@@ -1,84 +1,71 @@
-import speech_recognition as sr
-import requests
-import os
-import sys
-
-# --- CONFIGURATION ---
-OLLAMA_MODEL = "phi3:mini"  # Make sure you have run: ollama pull phi3:mini
-MIC_INDEX = 1               # Your USB Mic Index from previous steps
-
-def speak(text):
-    """Simple Text-to-Speech using espeak"""
-    print(f"Robot: {text}")
-    # -ven+m3 changes voice to male #3, -s150 is speed
-    safe_text = text.replace("'", "").replace('"', "")
-    os.system(f'espeak -ven+m3 -s150 "{safe_text}" 2>/dev/null')
-
-def listen():
-    """Listens for audio and converts to text"""
-    r = sr.Recognizer()
+(ai-env) fyplg@FYPLG:~/Desktop/pi/ai_robot $ python simple.py 
+Robot: System ready. Waiting for input.
+ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.front.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM front
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.rear
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.center_lfe
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.side
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround40.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround40
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround41
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround50
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround51
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround71.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround71
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM iec958
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
+ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
+ALSA lib pcm_dmix.c:1000:(snd_pcm_dmix_open) unable to open slave
+Cannot connect to server socket err = No such file or directory
+Cannot connect to server request channel
+jack server is not running or cannot be started
+JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/ai_robot/simple.py", line 72, in <module>
+    user_input = listen()
+  File "/home/fyplg/Desktop/pi/ai_robot/simple.py", line 20, in listen
     mic = sr.Microphone(device_index=MIC_INDEX)
-    
-    with mic as source:
-        # Dynamic thresholding helps if background is noisy
-        r.adjust_for_ambient_noise(source, duration=1)
-        r.dynamic_energy_threshold = True
-        
-        print("\nListening... (Speak now!)")
-        try:
-            # Listen for up to 10 seconds
-            audio = r.listen(source, timeout=10, phrase_time_limit=10)
-            print("Processing audio...")
-            
-            # Convert to text
-            text = r.recognize_google(audio).lower()
-            print(f"You said: {text}")
-            return text
-            
-        except sr.WaitTimeoutError:
-            print("Time out (No speech detected).")
-            return None
-        except sr.UnknownValueError:
-            print("Could not understand audio.")
-            return None
-        except sr.RequestError as e:
-            print(f"Google API Error: {e}")
-            return None
-
-def ask_ollama(prompt):
-    """Sends text to Ollama and gets response"""
-    url = "http://localhost:11434/api/generate"
-    data = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False
-    }
-    
-    try:
-        print("Thinking...")
-        response = requests.post(url, json=data)
-        if response.status_code == 200:
-            return response.json()['response']
-        else:
-            return f"Error from Ollama: {response.status_code}"
-    except Exception as e:
-        return f"Could not connect to Ollama. Is it running? Error: {e}"
-
-# --- MAIN LOOP ---
-if __name__ == "__main__":
-    speak("System ready. Waiting for input.")
-    
-    while True:
-        user_input = listen()
-        
-        if user_input:
-            # Check for exit command
-            if "stop" in user_input or "exit" in user_input:
-                speak("Goodbye.")
-                sys.exit()
-                
-            # Get AI Response
-            ai_reply = ask_ollama(user_input)
-            
-            # Speak Response
-            speak(ai_reply)
+  File "/home/fyplg/Desktop/pi/ai_robot/ai-env/lib/python3.13/site-packages/speech_recognition/__init__.py", line 81, in __init__
+    assert 0 <= device_index < count, "Device index out of range ({} devices available; device index should be between 0 and {} inclusive)".format(count, count - 1)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Device index out of range (1 devices available; device index should be between 0 and 0 inclusive)
+(ai-env) fyplg@FYPLG:~/Desktop/pi/ai_robot $ 
