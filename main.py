@@ -97,7 +97,7 @@ def speak(text):
 def listen_and_respond():
     global CURRENT_STATE
     recognizer = sr.Recognizer()
-    mic = sr.Microphone()
+    mic = sr.Microphone(device_index=1)
 
     print("System Ready. Open browser at http://localhost:5000")
     
