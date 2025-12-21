@@ -36,7 +36,7 @@ def load_student_data():
 
     # Loop through every image in the folder
     for file in os.listdir(path):
-        if file.endswith(".jpg") or file.endswith(".png"):
+        if file.endswith(".jpg") or file.endswith(".png") or file.endswith(".jpeg"):
             # Load image
             img = face_recognition.load_image_file(f"{path}/{file}")
             # Encode face (Get the AI numbers describing the face)
