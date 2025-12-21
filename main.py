@@ -3,216 +3,214 @@ import cv2
 import speech_recognition as sr
 import os
 import time
-import requests
 import json
+import face_recognition
+import numpy as np
 import logging
 from flask import Flask, render_template, Response, stream_with_context
-from ultralytics import YOLO
-from picamera2 import Picamera2
 
 # --- CONFIGURATION ---
 app = Flask(__name__)
-# Suppress Flask logs in terminal to keep it clean
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-OLLAMA_MODEL = "qwen2.5:0.5b"  # Fast model
-MIC_INDEX = 1                  # Your USB Mic Index
-WAKE_WORD = "computer"         # Or "hi", "robot"
+MIC_INDEX = 1  # Your USB Mic Index
 
-# Global Shared Variables
-current_scene_objects = []     # List of things the robot sees
-video_frame = None             # The current video image
-CURRENT_STATE = "IDLE"         # UI State: IDLE, LISTENING, THINKING, SPEAKING
+# Global Variables
+video_frame = None
+known_face_encodings = []
+known_face_names = []
+current_detected_name = None
+last_processed_name = None  # To prevent repeating the same check 5 times a second
 
-# --- PART 1: FLASK WEB SERVER ---
+# --- STEP 1: LOAD DATABASE & FACES ---
+def load_student_data():
+    print(" [DB] Loading Student Faces...")
+    global known_face_encodings, known_face_names
+    
+    path = "student_pics"
+    if not os.path.exists(path):
+        os.makedirs(path)
+        print(" ! Created folder 'student_pics'. Please put .jpg files there!")
+        return
+
+    # Loop through every image in the folder
+    for file in os.listdir(path):
+        if file.endswith(".jpg") or file.endswith(".png"):
+            # Load image
+            img = face_recognition.load_image_file(f"{path}/{file}")
+            # Encode face (Get the AI numbers describing the face)
+            encoding = face_recognition.face_encodings(img)
+            
+            if len(encoding) > 0:
+                known_face_encodings.append(encoding[0])
+                # Use filename as name (remove .jpg)
+                name = os.path.splitext(file)[0]
+                known_face_names.append(name)
+                print(f"   + Loaded: {name}")
+    
+    print(f" [DB] System Ready. Known students: {len(known_face_names)}")
+
+def check_registration(name):
+    """Checks JSON to see if student is registered"""
+    try:
+        with open('students.json', 'r') as f:
+            db = json.load(f)
+        
+        student = db.get(name)
+        if student:
+            return student['registered']
+        return None # Student not in database file
+    except:
+        return None
+
+# --- AUDIO FUNCTIONS ---
+def speak(text):
+    print(f"Robot: {text}")
+    safe_text = text.replace("'", "").replace('"', "")
+    os.system(f'espeak -ven+m3 -s160 "{safe_text}" 2>/dev/null')
+    time.sleep(0.5) # Wait for audio to release
+
+def listen_for_name():
+    """Asks for name if face is not recognized"""
+    speak("Face not recognized. Please state your name clearly.")
+    r = sr.Recognizer()
+    mic = sr.Microphone(device_index=MIC_INDEX)
+    
+    with mic as source:
+        r.adjust_for_ambient_noise(source, duration=1)
+        try:
+            audio = r.listen(source, timeout=5)
+            name = r.recognize_google(audio).lower()
+            return name
+        except:
+            return None
+
+# --- WEB SERVER ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
 def generate_frames():
-    """Stream video to browser"""
     global video_frame
     while True:
         if video_frame is not None:
-            # Encode frame to JPEG
             ret, buffer = cv2.imencode('.jpg', video_frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        time.sleep(0.04) # 25 FPS
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        time.sleep(0.04)
 
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/status_feed')
-def status_feed():
-    """Push state updates to the UI"""
-    def event_stream():
-        last_state = ""
-        while True:
-            global CURRENT_STATE
-            if CURRENT_STATE != last_state:
-                yield f"data: {CURRENT_STATE}\n\n"
-                last_state = CURRENT_STATE
-            time.sleep(0.1)
-    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
-
-
-# --- PART 2: VISION (EYES) ---
-def vision_loop():
-    global video_frame, current_scene_objects
-    print(" [EYES] Starting Camera (Picamera2)...")
+# --- LOGIC LOOP (THE BRAIN) ---
+def exam_logic_loop():
+    global current_detected_name, last_processed_name
     
-    # Initialize YOLO
-    model = YOLO("yolov8n.pt")
-    
-    # Initialize Picamera2
-    picam2 = Picamera2()
-    picam2.configure(picam2.create_preview_configuration(
-        main={"size": (640, 480), "format": "RGB888"}
-    ))
-    picam2.start()
-
     while True:
-        try:
-            # Capture from Pi Camera
-            frame = picam2.capture_array()
+        # Wait until we see someone new
+        if current_detected_name and current_detected_name != last_processed_name:
             
-            # Since Picamera captures RGB, OpenCV expects BGR
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-            # YOLO Inference
-            results = model(frame, verbose=False, stream=True)
+            name = current_detected_name
+            print(f" [LOGIC] Processing student: {name}")
             
-            detected = []
-            for r in results:
-                frame = r.plot() # Draw boxes
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    detected.append(model.names[cls_id])
+            if name == "Unknown":
+                # Scenario A: Face not in database
+                spoken_name = listen_for_name()
+                if spoken_name:
+                    speak(f"I heard {spoken_name}. Checking database manually.")
+                    # You could add manual logic here
+                    name = spoken_name.replace(" ", "_") # format to match DB keys
             
-            # Update Globals
-            current_scene_objects = list(set(detected))
-            video_frame = frame
+            # Scenario B: Known Face (or manually spoken name)
+            is_registered = check_registration(name)
             
-        except Exception as e:
-            print(f"Vision Error: {e}")
-            time.sleep(1)
-
-
-# --- PART 3: VOICE & BRAIN (EARS & MOUTH) ---
-def speak(text):
-    global CURRENT_STATE
-    if not text.strip(): return
-    
-    CURRENT_STATE = "SPEAKING"
-    print(f"Robot: {text}")
-    
-    safe_text = text.replace("'", "").replace('"', "")
-    os.system(f'espeak -ven+m3 -s160 "{safe_text}" 2>/dev/null')
-    
-    # Wait for audio to release (Critical fix for "Stuck Listening")
-    time.sleep(0.5)
-    CURRENT_STATE = "IDLE"
-
-def stream_response(prompt):
-    global CURRENT_STATE
-    CURRENT_STATE = "THINKING"
-    
-    # Build prompt with visual context
-    vision_context = ", ".join(current_scene_objects)
-    if not vision_context: vision_context = "nothing clearly"
-    
-    full_prompt = (
-        f"You are a robot. You see: {vision_context}. "
-        f"User said: {prompt}. Be brief."
-    )
-    
-    url = "http://localhost:11434/api/generate"
-    data = {"model": OLLAMA_MODEL, "prompt": full_prompt, "stream": True}
-    
-    print(" [BRAIN] Thinking...", end="", flush=True)
-    
-    try:
-        response = requests.post(url, json=data, stream=True)
-        buffer = ""
-        
-        for line in response.iter_lines():
-            if line:
-                json_chunk = json.loads(line.decode('utf-8'))
-                if 'response' in json_chunk:
-                    word = json_chunk['response']
-                    buffer += word
-                    # Speak continuously on punctuation
-                    if word in ['.', '?', '!', '\n']:
-                        speak(buffer)
-                        buffer = ""
-                        CURRENT_STATE = "SPEAKING" # Keep state updated
-        
-        if buffer.strip(): speak(buffer)
-        
-    except Exception as e:
-        print(f"Ollama Error: {e}")
-
-    CURRENT_STATE = "IDLE"
-
-def voice_loop():
-    global CURRENT_STATE
-    recognizer = sr.Recognizer()
-    mic = sr.Microphone(device_index=MIC_INDEX)
-    
-    print(" [EARS] Calibrating Microphone...")
-    with mic as source:
-        recognizer.adjust_for_ambient_noise(source, duration=1)
-        recognizer.dynamic_energy_threshold = True
-    
-    print(" [SYSTEM] Robot Online.")
-
-    while True:
-        try:
-            with mic as source:
-                # Don't change state to "Listening" on the UI until we actually detect something
-                # to avoid flashing green constantly
+            if is_registered is True:
+                speak(f"Hello {name}. You are registered for this test.")
+                time.sleep(0.2)
+                speak("Please be aware. Malpractice is strictly prohibited.")
+                speak("No phones, no smartwatches, and keep your eyes on your own paper.")
+                speak("You may enter.")
+                last_processed_name = name # Mark as done so we don't repeat
                 
-                # Listen (Blocking)
-                try:
-                    audio = recognizer.listen(source, timeout=None, phrase_time_limit=5)
-                except sr.WaitTimeoutError:
-                    continue
+            elif is_registered is False:
+                speak(f"Alert. {name}, you are NOT registered for this exam.")
+                speak("Please leave the hall immediately.")
+                last_processed_name = name
+                
+            elif is_registered is None:
+                # Recognized face, but not in JSON file
+                speak(f"I recognize you, {name}, but I cannot find your registration data.")
+            
+            # Reset after a while to allow re-checking?
+            # For now, we keep last_processed_name to avoid loops.
+            
+        time.sleep(0.5)
 
-                # Recognize
-                try:
-                    text = recognizer.recognize_google(audio).lower()
-                    
-                    # Only activate if wake word is heard OR if we just want it to reply to everything
-                    # For this demo, let's reply to everything to make testing easy
-                    print(f"You: {text}")
-                    CURRENT_STATE = "LISTENING"
-                    
-                    if WAKE_WORD in text or True: # Remove 'or True' to enforce wake word
-                        stream_response(text)
-                        
-                except sr.UnknownValueError:
-                    pass # Ignore noise
-                except sr.RequestError:
-                    print("Internet down?")
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name
+    
+    # Use OpenCV Capture (simpler for Face Rec than Picamera2 raw data)
+    cap = cv2.VideoCapture(0) # Or use the GStreamer pipeline if on Pi 5
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret: continue
+        
+        # Resize frame of video to 1/4 size for faster face recognition processing
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        
+        # Find all the faces
+        face_locations = face_recognition.face_locations(rgb_small_frame)
+        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+        
+        face_names = []
+        for face_encoding in face_encodings:
+            # See if the face is a match for the known face(s)
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+            name = "Unknown"
 
-        except Exception as e:
-            print(f"Voice Loop Error: {e}")
-            CURRENT_STATE = "IDLE"
+            # Use the known face with the smallest distance to the new face
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            if len(face_distances) > 0:
+                best_match_index = np.argmin(face_distances)
+                if matches[best_match_index]:
+                    name = known_face_names[best_match_index]
 
-# --- MAIN ENTRY POINT ---
+            face_names.append(name)
+            
+            # Update global for the logic loop
+            current_detected_name = name
+        
+        # Display the results
+        for (top, right, bottom, left), name in zip(face_locations, face_names):
+            # Scale back up since we scaled down by 1/4
+            top *= 4
+            right *= 4
+            bottom *= 4
+            left *= 4
+
+            # Draw a box around the face
+            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+            cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+        video_frame = frame
+
+# --- MAIN ENTRY ---
 if __name__ == "__main__":
-    # 1. Start Vision Thread
-    t_vision = threading.Thread(target=vision_loop, daemon=True)
-    t_vision.start()
-
-    # 2. Start Voice Thread
-    t_voice = threading.Thread(target=voice_loop, daemon=True)
-    t_voice.start()
-
-    # 3. Start Web Server (Blocks Main Thread)
-    # Open http://localhost:5000 in your browser
+    # Load data first
+    load_student_data()
+    
+    # Start Vision
+    t_vis = threading.Thread(target=vision_loop, daemon=True)
+    t_vis.start()
+    
+    # Start Logic
+    t_log = threading.Thread(target=exam_logic_loop, daemon=True)
+    t_log.start()
+    
+    # Start Web
     app.run(host='0.0.0.0', port=5000, debug=False)
