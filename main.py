@@ -2,83 +2,95 @@ import speech_recognition as sr
 import requests
 import os
 import sys
+import json
 
 # --- CONFIGURATION ---
-OLLAMA_MODEL = "phi3:mini"  # Make sure you have run: ollama pull phi3:mini
-MIC_INDEX = 1               # Your USB Mic Index from previous steps
+# "qwen2.5:0.5b" is 5x faster than phi3 on Raspberry Pi
+# Run: ollama pull qwen2.5:0.5b
+OLLAMA_MODEL = "qwen2.5:0.5b"  
+MIC_INDEX = 1               
 
 def speak(text):
-    """Simple Text-to-Speech using espeak"""
+    """Speaks text immediately using espeak"""
     print(f"Robot: {text}")
-    # -ven+m3 changes voice to male #3, -s150 is speed
-    safe_text = text.replace("'", "").replace('"', "")
-    os.system(f'espeak -ven+m3 -s150 "{safe_text}" 2>/dev/null')
+    # Escape quotes to prevent errors
+    safe_text = text.replace("'", "").replace('"', "").strip()
+    if not safe_text: return
+    # Speak fast (-s160)
+    os.system(f'espeak -ven+m3 -s160 "{safe_text}" 2>/dev/null')
 
 def listen():
-    """Listens for audio and converts to text"""
+    """Listens for audio"""
     r = sr.Recognizer()
-    mic = sr.Microphone()
+    # Use the specific index if you know it, or leave blank for default
+    mic = sr.Microphone(device_index=MIC_INDEX)
     
     with mic as source:
-        # Dynamic thresholding helps if background is noisy
-        r.adjust_for_ambient_noise(source, duration=1)
+        r.adjust_for_ambient_noise(source, duration=0.5) # Fast adapt
         r.dynamic_energy_threshold = True
         
-        print("\nListening... (Speak now!)")
+        print("\nListening...")
         try:
-            # Listen for up to 10 seconds
-            audio = r.listen(source, timeout=10, phrase_time_limit=10)
-            print("Processing audio...")
-            
-            # Convert to text
+            audio = r.listen(source, timeout=10, phrase_time_limit=6)
+            print("Processing...")
             text = r.recognize_google(audio).lower()
-            print(f"You said: {text}")
+            print(f"You: {text}")
             return text
-            
-        except sr.WaitTimeoutError:
-            print("Time out (No speech detected).")
-            return None
-        except sr.UnknownValueError:
-            print("Could not understand audio.")
-            return None
-        except sr.RequestError as e:
-            print(f"Google API Error: {e}")
+        except Exception:
             return None
 
-def ask_ollama(prompt):
-    """Sends text to Ollama and gets response"""
+def stream_and_speak(prompt):
+    """Streams the response from Ollama and speaks sentence-by-sentence"""
     url = "http://localhost:11434/api/generate"
+    
+    # We tell the AI to be brief to speed up generation
+    full_prompt = f"You are a helpful voice assistant. Keep your answer to 1 or 2 short sentences. User said: {prompt}"
+    
     data = {
         "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False
+        "prompt": full_prompt,
+        "stream": True  # <--- THIS IS THE KEY
     }
     
+    print("Thinking...", end="", flush=True)
+    
     try:
-        print("Thinking...")
-        response = requests.post(url, json=data)
-        if response.status_code == 200:
-            return response.json()['response']
-        else:
-            return f"Error from Ollama: {response.status_code}"
+        response = requests.post(url, json=data, stream=True)
+        
+        buffer = ""
+        for line in response.iter_lines():
+            if line:
+                # Decode the chunk
+                decoded_line = line.decode('utf-8')
+                json_chunk = json.loads(decoded_line)
+                
+                if 'response' in json_chunk:
+                    word = json_chunk['response']
+                    buffer += word
+                    
+                    # If we hit a punctuation mark, speak the buffer immediately
+                    if word in ['.', '?', '!', '\n']:
+                        speak(buffer)
+                        buffer = ""  # Clear buffer for next sentence
+        
+        # Speak any remaining text
+        if buffer.strip():
+            speak(buffer)
+            
     except Exception as e:
-        return f"Could not connect to Ollama. Is it running? Error: {e}"
+        print(f"\nError: {e}")
 
 # --- MAIN LOOP ---
 if __name__ == "__main__":
-    speak("System ready. Waiting for input.")
+    speak("I am ready.")
     
     while True:
         user_input = listen()
         
         if user_input:
-            # Check for exit command
             if "stop" in user_input or "exit" in user_input:
                 speak("Goodbye.")
                 sys.exit()
                 
-            # Get AI Response
-            ai_reply = ask_ollama(user_input)
-            
-            # Speak Response
-            speak(ai_reply)
+            # Use the new streaming function
+            stream_and_speak(user_input)
