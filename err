@@ -1,2 +1,7 @@
-sudo rm /etc/asound.conf
-rm ~/.asoundrc
+# Install system dependencies for compiling dlib
+sudo apt update
+sudo apt install cmake libopenblas-dev liblapack-dev libjpeg-dev
+
+# Install Python libraries
+# This specific command will take a long time to finish. Be patient!
+pip install face_recognition
