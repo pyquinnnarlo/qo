@@ -1,5 +1,1 @@
-Listening... (Speak now!)
-Processing audio...
-You said: what is science
-Thinking...
-Robot: Science can be defined as a systematic enterprise that builds and organizes knowledge in the form of testable explanations and predictions about the universe. It uses empirical methods to acquire new knowledge or correct and integrate previous understandings, which are known as scientific theories. Science is often associated with experimentation, evidence-based conclusions, peer review processes, repeatability, and logical reasoning applied within various fields such as biology, chemistry, physics, environmental science, astronomy, and many more. Its purpose is to discover new knowledge about the world through observation and testing of hypotheses which can lead to technological advancdements that impact daily life on a global scale.
+ollama pull qwen2.5:0.5b
