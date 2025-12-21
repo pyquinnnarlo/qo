@@ -1,7 +1,8 @@
-python main.py
+ python main.py
 /home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/face_recognition_models/__init__.py:7: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
   from pkg_resources import resource_filename
  [DB] Loading Student Faces...
- [DB] System Ready. Known students: 0
+   + Loaded: john_doe
+ [DB] System Ready. Known students: 1
  * Serving Flask app 'main'
  * Debug mode: off
