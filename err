@@ -1,13 +1,1 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ pip install face_recognition_models
-Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
-Collecting face_recognition_models
-  Downloading https://www.piwheels.org/simple/face-recognition-models/face_recognition_models-0.3.0-py2.py3-none-any.whl (100.6 MB)
-     ━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.4/100.6 MB 255.8 kB/s eta 0:06:13
-error: incomplete-download
-
-× Download failed because not enough bytes were received (5.4 MB/100.6 MB)
-╰─> URL: https://www.piwheels.org/simple/face-recognition-models/face_recognition_models-0.3.0-py2.py3-none-any.whl#sha256=8d6b0af2e37a17120c3f13107974bc252142a4ffcb4e58eabdfcf26608e52c24
-
-note: This is an issue with network connectivity, not pip.
-hint: Consider using --resume-retries to enable download resumption.
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ 
+wget https://www.piwheels.org/simple/face-recognition-models/face_recognition_models-0.3.0-py2.py3-none-any.whl
