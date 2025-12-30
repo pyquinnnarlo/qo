@@ -1,15 +1,6 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ sudo apt install gstreamer1.0-libcamera
-gstreamer1.0-libcamera is already the newest version (0.6.0+rpt20251202-1).
-Summary:
-  Upgrading: 0, Installing: 0, Removing: 0, Not Upgrading: 4
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ libcamerify python main.py 
-/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/face_recognition_models/__init__.py:7: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  from pkg_resources import resource_filename
- [DB] Loading Student Faces...
-   + Loaded: john_doe
- [DB] System Ready. Known students: 1
- [VISION] Attempting to start camera via GStreamer...
- * Serving Flask app 'main'
- * Debug mode: off
- [ERROR] Failed to open camera! Check if 'gstreamer1.0-libcamera' is installed.
-
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ pip uninstall opencv-python opencv-contrib-python -y
+Found existing installation: opencv-python 4.12.0.88
+Not uninstalling opencv-python at /usr/local/lib/python3.13/dist-packages, outside environment /home/fyplg/Desktop/pi/exam/venv
+Can't uninstall 'opencv-python'. No files were found to uninstall.
+WARNING: Skipping opencv-contrib-python as it is not installed.
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ 
