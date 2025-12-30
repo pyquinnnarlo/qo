@@ -1,9 +1,3 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python main.py 
- [DB] Loading Student Faces...
-   + Loaded: john_doe
- [DB] System Ready. Known students: 1
- [VISION] Attempting to start camera via GStreamer...
- [ERROR] Failed to open camera! Check if 'gstreamer1.0-libcamera' is installed.
- * Serving Flask app 'main'
- * Debug mode: off
-
+pip uninstall opencv-python opencv-contrib-python -y
+sudo apt update
+sudo apt install python3-opencv -y
