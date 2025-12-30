@@ -151,6 +151,9 @@ def exam_logic_loop():
 def vision_loop():
     global video_frame, current_detected_name
     
+    print(" [VISION] Attempting to start camera via GStreamer...")
+    
+    # Raspberry Pi 5 GStreamer Pipeline
     pipeline = (
         "libcamerasrc ! "
         "video/x-raw, width=640, height=480, framerate=30/1 ! "
@@ -158,11 +161,21 @@ def vision_loop():
         "video/x-raw, format=BGR ! appsink"
     )
 
+    # Open the camera
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
     
+    if not cap.isOpened():
+        print(" [ERROR] Failed to open camera! Check if 'gstreamer1.0-libcamera' is installed.")
+        return
+
+    print(" [VISION] Camera started successfully.")
+
     while True:
         ret, frame = cap.read()
-        if not ret: continue
+        if not ret: 
+            print(" [ERROR] Camera is open but failed to read a frame.")
+            time.sleep(1)
+            continue
         
         # Resize frame of video to 1/4 size for faster face recognition processing
         small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
@@ -205,6 +218,7 @@ def vision_loop():
 
         video_frame = frame
 
+
 # --- MAIN ENTRY ---
 if __name__ == "__main__":
     # Load data first
@@ -220,18 +234,3 @@ if __name__ == "__main__":
     
     # Start Web
     app.run(host='0.0.0.0', port=5000, debug=False)
-
-
-
-
-
-
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ libcamerify python main.py 
-/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/face_recognition_models/__init__.py:7: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  from pkg_resources import resource_filename
- [DB] Loading Student Faces...
-   + Loaded: john_doe
- [DB] System Ready. Known students: 1
- * Serving Flask app 'main'
- * Debug mode: off
-
