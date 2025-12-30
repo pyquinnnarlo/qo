@@ -1,9 +1,138 @@
-# Raspberry Pi 5 specific GStreamer pipeline
-pipeline = (
-    "libcamerasrc ! "
-    "video/x-raw, width=640, height=480, framerate=30/1 ! "
-    "videoconvert ! "
-    "video/x-raw, format=BGR ! appsink"
-)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pi Robot Face</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: monospace;
+            overflow: hidden;
+        }
 
-cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        /* --- FACE CONTAINER --- */
+        .face {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 50px;
+            transition: all 0.3s;
+        }
+
+        /* --- EYES --- */
+        .eyes-row { display: flex; gap: 80px; }
+        .eye {
+            width: 100px;
+            height: 120px;
+            background: #00ffcc; /* Cyan default */
+            border-radius: 40%;
+            box-shadow: 0 0 20px #00ffcc;
+            transition: all 0.2s;
+        }
+
+        /* --- MOUTH --- */
+        .mouth {
+            width: 150px;
+            height: 10px;
+            background: #00ffcc;
+            border-radius: 10px;
+            box-shadow: 0 0 10px #00ffcc;
+            transition: all 0.1s;
+        }
+
+        /* --- ANIMATIONS / STATES --- */
+        
+        /* LISTENING: Green, wide eyes */
+        .listening .eye { background: #00ff00; height: 140px; box-shadow: 0 0 40px #00ff00; }
+        .listening .mouth { background: #00ff00; width: 100px; }
+
+        /* THINKING: Orange, pulsing eyes */
+        .thinking .eye { 
+            background: #ffaa00; 
+            height: 50px; 
+            box-shadow: 0 0 30px #ffaa00;
+            animation: pulse 0.5s infinite alternate; 
+        }
+        .thinking .mouth { background: #ffaa00; width: 50px; }
+        @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.1); } }
+
+        /* SPEAKING: Blue, moving mouth */
+        .speaking .eye { background: #00ccff; height: 100px; }
+        .speaking .mouth { 
+            background: #00ccff; 
+            animation: talk 0.2s infinite alternate;
+        }
+        @keyframes talk {
+            0% { height: 10px; width: 150px; border-radius: 10px; }
+            100% { height: 60px; width: 100px; border-radius: 50%; }
+        }
+
+        /* --- CAMERA OVERLAY --- */
+        .camera-feed {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 250px;
+            border: 2px solid #333;
+            border-radius: 10px;
+        }
+        
+        #status-text { margin-top: 40px; font-size: 20px; text-transform: uppercase; letter-spacing: 2px; }
+    </style>
+</head>
+<body>
+
+    <div id="face-container" class="face">
+        <div class="eyes-row">
+            <div class="eye left"></div>
+            <div class="eye right"></div>
+        </div>
+        <div class="mouth"></div>
+    </div>
+
+    <div id="status-text">SYSTEM READY</div>
+
+    <!-- Live Camera Stream -->
+    <img src="/video_feed" class="camera-feed" alt="Vision">
+
+    <script>
+        const face = document.getElementById('face-container');
+        const text = document.getElementById('status-text');
+
+        // Random blinking when idle
+        setInterval(() => {
+            if (face.className === 'face') { // Only blink if idle
+                face.classList.add('blink');
+                const eyes = document.querySelectorAll('.eye');
+                eyes.forEach(e => e.style.height = '10px');
+                setTimeout(() => {
+                    face.classList.remove('blink');
+                    eyes.forEach(e => e.style.height = '');
+                }, 200);
+            }
+        }, 4000);
+
+        // Listen for state updates from Python
+        const evtSource = new EventSource("/status_feed");
+        evtSource.onmessage = function(event) {
+            const state = event.data;
+            text.innerText = state;
+
+            // Reset classes
+            face.className = 'face';
+
+            if (state.includes("LISTENING")) face.classList.add('listening');
+            if (state.includes("THINKING")) face.classList.add('thinking');
+            if (state.includes("SPEAKING")) face.classList.add('speaking');
+        };
+    </script>
+</body>
+</html>
