@@ -1,12 +1,31 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ pip install rpi-lgpio
-Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
-Requirement already satisfied: rpi-lgpio in /usr/lib/python3/dist-packages (0.6)
-Requirement already satisfied: lgpio>=0.1.0.1 in /usr/lib/python3/dist-packages (from rpi-lgpio) (0.2.2.0)
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python servo.py 
-/usr/lib/python3/dist-packages/gpiozero/output_devices.py:1509: PWMSoftwareFallback: To reduce servo jitter, use the pigpio pin factory.See https://gpiozero.readthedocs.io/en/stable/api_output.html#servo for more info
-  warnings.warn(PWMSoftwareFallback(
-Testing Servo on GPIO 18...
-Opening Gate (90)
-Closing Gate (-90)
-Opening Gate (90)
-Closing Gate (-90)
+from gpiozero import AngularServo
+from gpiozero.pins.lgpio import LGPIOFactory # IMPORT THIS
+from time import sleep
+
+# 1. Force the Pi 5 to use the LGPIO system
+# This removes the "PWMSoftwareFallback" warning
+factory = LGPIOFactory()
+
+# 2. Configure the servo using that factory
+# Note: min_pulse_width/max_pulse_width might need tweaking for your specific motor (SM-S2309S)
+# Standard is usually 0.001 to 0.002, but extended range is 0.0005 to 0.0025.
+servo = AngularServo(18, 
+                     min_angle=-90, 
+                     max_angle=90, 
+                     min_pulse_width=0.0005, 
+                     max_pulse_width=0.0025,
+                     pin_factory=factory) 
+
+print("Testing Servo on GPIO 18 (Pin 12)...")
+
+try:
+    while True:
+        print("Opening Gate (90)")
+        servo.angle = 90
+        sleep(2)
+        
+        print("Closing Gate (-90)")
+        servo.angle = -90
+        sleep(2)
+except KeyboardInterrupt:
+    print("Test Stopped")
