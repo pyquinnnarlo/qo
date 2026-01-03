@@ -1,3 +1,5 @@
+
+
 import threading
 import cv2
 import speech_recognition as sr
@@ -8,8 +10,9 @@ import face_recognition
 import numpy as np
 import logging
 import hashlib
+import re
 from flask import Flask, render_template, Response
-from gtts import gTTS  # NEW: Google Text-to-Speech
+from gtts import gTTS
 from ctypes import *
 from contextlib import contextmanager
 
@@ -31,8 +34,7 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# MIC_INDEX = None uses the System Default (configured in Pi Desktop)
-MIC_INDEX = None 
+MIC_INDEX = None # System Default
 
 # Global Variables
 video_frame = None
@@ -62,20 +64,18 @@ def load_student_data():
                 known_face_names.append(name)
                 print(f"   + Loaded: {name}")
     
-    print(f" [DB] System Ready. Known students: {len(known_face_names)}")
+    print(f" [DB] System Ready.")
 
-def check_registration(name):
+def get_student_info(name):
+    """Returns the full dictionary for a student"""
     try:
         with open('students.json', 'r') as f:
             db = json.load(f)
-        student = db.get(name)
-        if student:
-            return student.get('registered', False)
-        return None 
+        return db.get(name) # Returns {registered: true, id: ...} or None
     except:
         return None
 
-# --- AUDIO FUNCTIONS (UPDATED FOR REAL VOICE) ---
+# --- AUDIO FUNCTIONS ---
 def update_status(status):
     global current_status
     current_status = status
@@ -84,39 +84,34 @@ def speak(text):
     global current_status
     print(f"Robot: {text}")
     
-    # Update UI to make mouth move
     prev_status = current_status
     update_status(f"SPEAKING: {text}")
     
-    # 1. Create a unique filename based on the text (Caching)
-    # This prevents downloading "Please look at the camera" 100 times
+    # Cache audio to make response faster
     filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
     file_path = f"audio_cache/{filename}"
     
     if not os.path.exists("audio_cache"):
         os.makedirs("audio_cache")
 
-    # 2. Generate Audio if it doesn't exist
     if not os.path.exists(file_path):
         try:
-            # lang='en', tld='co.uk' gives a nice British English voice
             tts = gTTS(text=text, lang='en', tld='co.uk')
             tts.save(file_path)
         except Exception as e:
-            print(f" [ERROR] Could not generate TTS: {e}")
+            print(f" [ERROR] TTS Failed: {e}")
             update_status(prev_status)
             return
 
-    # 3. Play the MP3 file using mpg321 (Quiet mode)
     os.system(f"mpg321 -q {file_path}")
-    
     update_status(prev_status)
 
-def listen_for_name():
-    """Asks for name with error handling"""
+def listen(prompt_text=None):
+    """Generic listener"""
+    if prompt_text:
+        speak(prompt_text)
+
     update_status("LISTENING")
-    speak("Face not recognized. Please state your name.")
-    
     r = sr.Recognizer()
     
     with no_alsa_errors():
@@ -124,28 +119,116 @@ def listen_for_name():
             mic = sr.Microphone(device_index=MIC_INDEX)
             with mic as source:
                 r.adjust_for_ambient_noise(source, duration=0.5)
-                # Reduced timeout to prevent hanging
-                audio = r.listen(source, timeout=4, phrase_time_limit=4)
+                audio = r.listen(source, timeout=5, phrase_time_limit=5)
                 
                 update_status("THINKING")
-                name = r.recognize_google(audio).lower()
-                return name
+                text = r.recognize_google(audio).lower()
+                print(f" [User said]: {text}")
+                return text
         except sr.WaitTimeoutError:
-            print(" [AUDIO] Timeout.")
             return None
         except sr.UnknownValueError:
             speak("I did not understand.")
             return None
-        except Exception as e:
-            print(f" [AUDIO] Error: {e}")
+        except Exception:
+            speak("Audio error.")
             return None
         finally:
             update_status("IDLE")
 
-# --- WEB SERVER ---
+def clean_id(text):
+    """Removes spaces and dashes to compare IDs (e.g., 'stu 001' -> 'stu001')"""
+    if not text: return ""
+    return re.sub(r'[\s-]', '', text).lower()
+
+# --- LOGIC LOOP (STRICT SECURITY MODE) ---
+def exam_logic_loop():
+    global current_detected_name
+    
+    time.sleep(3) 
+    speak("Examination Proctor System Online.")
+    
+    while True:
+        update_status("WAITING FOR STUDENT")
+        
+        # 1. Wait for a face
+        if current_detected_name is None:
+            if int(time.time()) % 10 == 0: 
+                speak("Please step forward for identification.")
+            time.sleep(1)
+            continue
+            
+        # 2. Face Detected - STRICT CHECK
+        name = current_detected_name
+        update_status(f"IDENTIFYING: {name}")
+        
+        # --- SECURITY FIX: REJECT UNKNOWN FACES ---
+        if name == "Unknown":
+            speak("Face not recognized.")
+            time.sleep(0.5)
+            speak("Access Denied. Your face does not match our records.")
+            speak("Please step aside and see a human administrator.")
+            
+            # Lock the system until this person leaves the camera view
+            while current_detected_name is not None:
+                time.sleep(1)
+            continue # Restart loop for the next person
+            
+        # 3. Face is Known - Proceed to Verification
+        speak(f"Biometric match found. Hello {name}.")
+        
+        # Retrieve Data
+        student_data = get_student_info(name)
+        
+        if not student_data:
+            # Face matches image file, but name isn't in JSON
+            speak(f"Error. Student {name} has no registration data file.")
+            while current_detected_name is not None: time.sleep(1)
+            continue
+
+        # 4. Two-Factor Authentication (Face + Voice ID)
+        correct_id = student_data['id'].lower()
+        spoken_id = listen("To confirm your identity, please state your Student I D.")
+        
+        # Check ID
+        if spoken_id and clean_id(spoken_id) == clean_id(correct_id):
+            speak("Identity confirmed.")
+        else:
+            speak(f"Authentication Failed. I heard {spoken_id}, but records expect {correct_id}.")
+            speak("Access Denied.")
+            while current_detected_name is not None: time.sleep(1)
+            continue
+
+        # 5. Ask for Test (Administrative Log)
+        test_name = listen("What test are you writing today?")
+        if test_name:
+            speak(f"Logging entry for {test_name}.")
+        
+        # 6. Final Registration Check & Rules
+        if student_data['registered']:
+            speak("Registration Verified. Listen strictly to the rules.")
+            time.sleep(0.3)
+            speak("1. No electronic devices. Phones, watches, and glasses must be removed.")
+            time.sleep(0.3)
+            speak("2. Keep your eyes on your own paper.")
+            time.sleep(0.3)
+            speak("Violation will result in immediate failure.")
+            time.sleep(0.5)
+            speak("You may enter. Good luck.")
+            
+            # Wait for student to enter
+            while current_detected_name is not None: time.sleep(1)
+            speak("Next student.")
+            
+        else:
+            speak(f"Alert. {name}, you are NOT registered for this exam.")
+            speak("Please leave the area immediately.")
+            while current_detected_name is not None: time.sleep(1)
+
+
+# --- WEB & VISION SETUP ---
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 def generate_frames():
     global video_frame
@@ -156,8 +239,7 @@ def generate_frames():
         time.sleep(0.04)
 
 @app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+def video_feed(): return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/status_feed')
 def status_feed():
@@ -167,130 +249,51 @@ def status_feed():
             time.sleep(0.5)
     return Response(generate(), mimetype="text/event-stream")
 
-# --- LOGIC LOOP ---
-def exam_logic_loop():
-    global current_detected_name
-    
-    time.sleep(3) 
-    speak("System Online.")
-    
-    while True:
-        update_status("WAITING FOR FACE")
-        
-        # 1. Wait for Face
-        if current_detected_name is None:
-            speak("Please look at the camera.")
-            # Wait loop to avoid repeating too fast
-            for _ in range(6): 
-                if current_detected_name is not None: break
-                time.sleep(1)
-            continue
-            
-        # 2. Process Face
-        name = current_detected_name
-        update_status(f"PROCESSING: {name}")
-        
-        if name == "Unknown":
-            spoken_name = listen_for_name()
-            if spoken_name:
-                speak(f"I heard {spoken_name}.")
-                name = spoken_name.replace(" ", "_")
-        
-        # 3. Validation
-        is_registered = check_registration(name)
-        
-        if is_registered is True:
-            speak(f"Hello {name}.")
-            time.sleep(0.2)
-            speak("You are registered. You may enter.")
-            
-            # Wait for them to leave
-            while current_detected_name == name: time.sleep(1)
-            speak("Next student.")
-            
-        elif is_registered is False:
-            speak(f"Alert. {name}, you are NOT registered.")
-            while current_detected_name == name: time.sleep(1)
-                
-        elif is_registered is None:
-            if name != "Unknown":
-                speak(f"I cannot find registration for {name}.")
-                time.sleep(2)
-        
-        time.sleep(1) 
-
-# --- VISION LOOP ---
 def vision_loop():
     global video_frame, current_detected_name
-    
     print(" [VISION] Starting Camera...")
     
-    pipeline = (
-        "libcamerasrc ! "
-        "video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! "
-        "videoconvert ! "
-        "video/x-raw, format=BGR ! appsink"
-    )
+    pipeline = "libcamerasrc ! video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink"
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
-    if not cap.isOpened():
-        print(" [ERROR] Camera Failed.")
-        return
+    if not cap.isOpened(): return
 
     frame_count = 0
-    cached_face_locations = []
-    cached_face_names = []
+    cached_names = []
+    cached_locs = []
 
     while True:
         ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.1)
-            continue
+        if not ret: time.sleep(0.1); continue
         
         frame_count += 1
-        
-        # --- OPTIMIZATION: Only detect faces every 5th frame ---
-        if frame_count % 5 == 0:
-            small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        if frame_count % 5 == 0: # Process every 5th frame
+            small = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            cached_locs = face_recognition.face_locations(rgb)
+            encodings = face_recognition.face_encodings(rgb, cached_locs)
             
-            cached_face_locations = face_recognition.face_locations(rgb_small_frame)
-            face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
-            
-            cached_face_names = []
-            detected_name = None
+            cached_names = []
+            detected = None
+            for enc in encodings:
+                matches = face_recognition.compare_faces(known_face_encodings, enc)
+                name = "Unknown"
+                dists = face_recognition.face_distance(known_face_encodings, enc)
+                if len(dists) > 0:
+                    if matches[np.argmin(dists)]: name = known_face_names[np.argmin(dists)]
+                cached_names.append(name)
+                detected = name
+            current_detected_name = detected
 
-            if face_encodings:
-                for face_encoding in face_encodings:
-                    matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                    name = "Unknown"
-                    face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                    
-                    if len(face_distances) > 0:
-                        best_match_index = np.argmin(face_distances)
-                        if matches[best_match_index]:
-                            name = known_face_names[best_match_index]
-                    
-                    cached_face_names.append(name)
-                    detected_name = name
-            
-            current_detected_name = detected_name
-
-        for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
-            top *= 4; right *= 4; bottom *= 4; left *= 4
+        for (t, r, b, l), name in zip(cached_locs, cached_names):
+            t*=4; r*=4; b*=4; l*=4
             color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-            cv2.putText(frame, str(name), (left, bottom + 20), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-
+            cv2.rectangle(frame, (l, t), (r, b), color, 2)
+            cv2.putText(frame, name, (l, b+20), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255,255,255), 1)
         video_frame = frame
 
 if __name__ == "__main__":
     load_student_data()
-    
-    t_vis = threading.Thread(target=vision_loop, daemon=True)
-    t_vis.start()
-    
-    t_log = threading.Thread(target=exam_logic_loop, daemon=True)
-    t_log.start()
-    
+    threading.Thread(target=vision_loop, daemon=True).start()
+    threading.Thread(target=exam_logic_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, debug=False)
