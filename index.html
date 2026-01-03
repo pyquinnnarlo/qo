@@ -3,135 +3,213 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pi Robot Face</title>
+    <title>PROCTOR SYSTEM AI</title>
+    <!-- Import Sci-Fi Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
     <style>
         body {
-            background-color: #000;
-            color: #0f0;
+            background-color: #050505;
+            color: #00ffcc;
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
             height: 100vh;
             margin: 0;
-            font-family: monospace;
+            font-family: 'Orbitron', sans-serif;
             overflow: hidden;
+            transition: background-color 0.5s;
         }
 
-        /* --- FACE CONTAINER --- */
-        .face {
+        /* --- RED ALERT MODE --- */
+        body.alert-mode {
+            animation: red-alert 1s infinite alternate;
+        }
+        @keyframes red-alert {
+            0% { background-color: #050505; }
+            100% { background-color: #330000; }
+        }
+        body.alert-mode .video-container {
+            border-color: #ff0000;
+            box-shadow: 0 0 30px #ff0000;
+        }
+        body.alert-mode #status-text { color: #ff0000; text-shadow: 0 0 10px #ff0000; }
+
+        /* --- LAYOUT --- */
+        .main-layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            margin-top: 20px;
+        }
+
+        /* --- ROBOT FACE --- */
+        .face-container {
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 50px;
-            transition: all 0.3s;
+            margin-bottom: 20px;
         }
-
-        /* --- EYES --- */
-        .eyes-row { display: flex; gap: 80px; }
+        .eyes-row { display: flex; gap: 60px; margin-bottom: 20px; }
         .eye {
-            width: 100px;
-            height: 120px;
-            background: #00ffcc; /* Cyan default */
+            width: 80px; height: 100px;
+            background: #00ffcc;
             border-radius: 40%;
             box-shadow: 0 0 20px #00ffcc;
-            transition: all 0.2s;
+            transition: 0.3s;
         }
-
-        /* --- MOUTH --- */
         .mouth {
-            width: 150px;
-            height: 10px;
+            width: 120px; height: 8px;
             background: #00ffcc;
-            border-radius: 10px;
+            border-radius: 5px;
             box-shadow: 0 0 10px #00ffcc;
-            transition: all 0.1s;
-        }
-
-        /* --- ANIMATIONS / STATES --- */
-        
-        /* LISTENING: Green, wide eyes */
-        .listening .eye { background: #00ff00; height: 140px; box-shadow: 0 0 40px #00ff00; }
-        .listening .mouth { background: #00ff00; width: 100px; }
-
-        /* THINKING: Orange, pulsing eyes */
-        .thinking .eye { 
-            background: #ffaa00; 
-            height: 50px; 
-            box-shadow: 0 0 30px #ffaa00;
-            animation: pulse 0.5s infinite alternate; 
-        }
-        .thinking .mouth { background: #ffaa00; width: 50px; }
-        @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.1); } }
-
-        /* SPEAKING: Blue, moving mouth */
-        .speaking .eye { background: #00ccff; height: 100px; }
-        .speaking .mouth { 
-            background: #00ccff; 
-            animation: talk 0.2s infinite alternate;
-        }
-        @keyframes talk {
-            0% { height: 10px; width: 150px; border-radius: 10px; }
-            100% { height: 60px; width: 100px; border-radius: 50%; }
-        }
-
-        /* --- CAMERA OVERLAY --- */
-        .camera-feed {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 250px;
-            border: 2px solid #333;
-            border-radius: 10px;
+            transition: 0.1s;
         }
         
-        #status-text { margin-top: 40px; font-size: 20px; text-transform: uppercase; letter-spacing: 2px; }
+        /* Face States */
+        .listening .eye { background: #00ff00; height: 110px; box-shadow: 0 0 30px #00ff00; }
+        .listening .mouth { width: 80px; background: #00ff00; }
+        .speaking .eye { background: #00ccff; height: 90px; }
+        .speaking .mouth { animation: talk 0.2s infinite alternate; }
+        @keyframes talk { from { height: 8px; width: 120px; } to { height: 40px; width: 80px; border-radius: 50%; } }
+
+        /* --- VIDEO HUD --- */
+        .video-container {
+            position: relative;
+            width: 640px; height: 480px;
+            border: 2px solid #00ffcc;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.3);
+            background: #000;
+            overflow: hidden;
+        }
+        .hud-corner {
+            position: absolute; width: 30px; height: 30px;
+            border: 3px solid #00ffcc; opacity: 0.7;
+        }
+        .tl { top: 10px; left: 10px; border-right: none; border-bottom: none; }
+        .tr { top: 10px; right: 10px; border-left: none; border-bottom: none; }
+        .bl { bottom: 10px; left: 10px; border-right: none; border-top: none; }
+        .br { bottom: 10px; right: 10px; border-left: none; border-top: none; }
+        
+        .scan-line {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 5px;
+            background: rgba(0, 255, 0, 0.5);
+            box-shadow: 0 0 10px #00ff00;
+            animation: scan 2.5s linear infinite;
+        }
+        @keyframes scan { 0% { top: -10%; } 100% { top: 110%; } }
+
+        /* --- AUDIO VISUALIZER --- */
+        .visualizer {
+            display: flex; gap: 5px; height: 30px; align-items: center; justify-content: center;
+            margin-top: 10px;
+        }
+        .bar { width: 8px; height: 5px; background: #333; transition: 0.2s; }
+        .active-viz .bar { background: #00ffcc; animation: wave 0.5s infinite alternate; }
+        @keyframes wave { 0% { height: 5px; } 100% { height: 30px; } }
+        .bar:nth-child(2) { animation-delay: 0.1s; }
+        .bar:nth-child(3) { animation-delay: 0.2s; }
+
+        /* --- ADMIN LOG --- */
+        .admin-log {
+            width: 250px; height: 480px;
+            border: 1px solid #005500;
+            background: rgba(0, 20, 0, 0.9);
+            padding: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #00ff00;
+            overflow-y: hidden; /* Auto scroll handles layout */
+            display: flex;
+            flex-direction: column-reverse; /* Newest at bottom visually */
+        }
+        .log-entry { margin-bottom: 5px; border-bottom: 1px solid #004400; padding-bottom: 2px; }
+        .log-ts { color: #00aa00; font-size: 10px; margin-right: 5px; }
+
+        #status-text {
+            font-size: 24px; letter-spacing: 3px; margin-top: 10px;
+            text-transform: uppercase;
+        }
     </style>
 </head>
 <body>
 
-    <div id="face-container" class="face">
+    <!-- ROBOT FACE -->
+    <div id="face-container" class="face-container">
         <div class="eyes-row">
             <div class="eye left"></div>
             <div class="eye right"></div>
         </div>
         <div class="mouth"></div>
+        <div id="visualizer" class="visualizer">
+            <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+        </div>
     </div>
 
-    <div id="status-text">SYSTEM READY</div>
+    <div id="status-text">SYSTEM INITIALIZING...</div>
 
-    <!-- Live Camera Stream -->
-    <img src="/video_feed" class="camera-feed" alt="Vision">
+    <!-- MAIN UI -->
+    <div class="main-layout">
+        
+        <!-- VIDEO HUD -->
+        <div class="video-container">
+            <img src="/video_feed" width="100%" height="100%">
+            <div class="scan-line"></div>
+            <div class="hud-corner tl"></div><div class="hud-corner tr"></div>
+            <div class="hud-corner bl"></div><div class="hud-corner br"></div>
+        </div>
+
+        <!-- ADMIN LOG -->
+        <div id="admin-log" class="admin-log">
+            <div class="log-entry">Waiting for input...</div>
+        </div>
+    </div>
 
     <script>
         const face = document.getElementById('face-container');
         const text = document.getElementById('status-text');
+        const viz = document.getElementById('visualizer');
+        const logBox = document.getElementById('admin-log');
 
-        // Random blinking when idle
-        setInterval(() => {
-            if (face.className === 'face') { // Only blink if idle
-                face.classList.add('blink');
-                const eyes = document.querySelectorAll('.eye');
-                eyes.forEach(e => e.style.height = '10px');
-                setTimeout(() => {
-                    face.classList.remove('blink');
-                    eyes.forEach(e => e.style.height = '');
-                }, 200);
-            }
-        }, 4000);
+        function addLog(msg) {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            div.innerHTML = `<span class="log-ts">[${time}]</span> ${msg}`;
+            logBox.prepend(div);
+            if (logBox.children.length > 20) logBox.lastChild.remove();
+        }
 
-        // Listen for state updates from Python
         const evtSource = new EventSource("/status_feed");
         evtSource.onmessage = function(event) {
             const state = event.data;
             text.innerText = state;
 
-            // Reset classes
-            face.className = 'face';
+            // Reset States
+            face.className = 'face-container';
+            viz.className = 'visualizer';
+            document.body.classList.remove('alert-mode');
 
-            if (state.includes("LISTENING")) face.classList.add('listening');
-            if (state.includes("THINKING")) face.classList.add('thinking');
-            if (state.includes("SPEAKING")) face.classList.add('speaking');
+            // Set States
+            if (state.includes("SPEAKING")) {
+                face.classList.add('speaking');
+                viz.classList.add('active-viz');
+            }
+            if (state.includes("LISTENING")) {
+                face.classList.add('listening');
+                viz.classList.add('active-viz');
+            }
+            if (state.includes("DENIED") || state.includes("FAILED")) {
+                document.body.classList.add('alert-mode');
+            }
+
+            // Log important events
+            if (state.includes("IDENTIFYING") || state.includes("DENIED") || state.includes("GRANTED") || state.includes("Logging")) {
+                // Prevent duplicate logs
+                if (!logBox.firstChild || !logBox.firstChild.innerHTML.includes(state)) {
+                    addLog(state);
+                }
+            }
         };
     </script>
 </body>
