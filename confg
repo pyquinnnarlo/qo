@@ -1,3 +1,18 @@
+sr/share/libcamera/ipa/rpi/pisp/ov5647.json
+[0:20:24.856669820] [2967]  INFO Camera camera_manager.cpp:223 Adding camera '/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36' for pipeline handler rpi/pisp
+[0:20:24.856706373] [2967]  INFO RPI pisp.cpp:1181 Registered camera /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 to CFE device /dev/media0 and ISP device /dev/media1 using PiSP variant BCM2712_D0
+[0:20:24.859922995] [2970]  INFO Camera camera.cpp:1215 configuring streams: (0) 640x480-YUYV/Rec709
+[0:20:24.860228463] [2967]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 - Selected sensor format: 640x480-SGBRG10_1X10/RAW - Selected CFE format: 640x480-PC1g/RAW
+[ WARN:0@9.340] global cap_gstreamer.cpp:1754 open OpenCV | GStreamer warning: unable to query duration of stream
+[ WARN:0@9.340] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
+Robot: Examination Proctor System Online.
+Robot: Please step forward for identification.
+Robot: Biometric match found. Hello quinn.
+Robot: To confirm your identity, please state your Student I D.
+/usr/include/c++/14/bits/stl_queue.h:233: std::queue<_Tp, _Sequence>::reference std::queue<_Tp, _Sequence>::front() [with _Tp = std::unique_ptr<RequestWrap>; _Sequence = std::deque<std::unique_ptr<RequestWrap>, std::allocator<std::unique_ptr<RequestWrap> > >; reference = std::unique_ptr<RequestWrap>&]: Assertion '!this->empty()' failed.
+Aborted
+
+
 import threading
 import cv2
 import speech_recognition as sr
