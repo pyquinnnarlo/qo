@@ -7,15 +7,32 @@ import json
 import face_recognition
 import numpy as np
 import logging
+import hashlib
 from flask import Flask, render_template, Response
+from gtts import gTTS  # NEW: Google Text-to-Speech
+from ctypes import *
+from contextlib import contextmanager
+
+# --- ALSA ERROR SUPPRESSION ---
+ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+
+@contextmanager
+def no_alsa_errors():
+    asound = cdll.LoadLibrary('libasound.so')
+    asound.snd_lib_error_set_handler(c_error_handler)
+    yield
+    asound.snd_lib_error_set_handler(None)
 
 # --- CONFIGURATION ---
 app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# *** UPDATE THIS AFTER RUNNING check_mic.py ***
-MIC_INDEX = 1  # Change this to the correct index found!
+# MIC_INDEX = None uses the System Default (configured in Pi Desktop)
+MIC_INDEX = None 
 
 # Global Variables
 video_frame = None
@@ -24,7 +41,7 @@ known_face_names = []
 current_detected_name = None  
 current_status = "SYSTEM READY"
 
-# --- STEP 1: LOAD DATABASE & FACES ---
+# --- STEP 1: LOAD DATABASE ---
 def load_student_data():
     print(" [DB] Loading Student Faces...")
     global known_face_encodings, known_face_names
@@ -58,7 +75,7 @@ def check_registration(name):
     except:
         return None
 
-# --- AUDIO FUNCTIONS ---
+# --- AUDIO FUNCTIONS (UPDATED FOR REAL VOICE) ---
 def update_status(status):
     global current_status
     current_status = status
@@ -66,44 +83,64 @@ def update_status(status):
 def speak(text):
     global current_status
     print(f"Robot: {text}")
+    
+    # Update UI to make mouth move
     prev_status = current_status
     update_status(f"SPEAKING: {text}")
     
-    safe_text = text.replace("'", "").replace('"', "")
-    os.system(f'espeak -ven+m3 -s160 "{safe_text}" 2>/dev/null')
+    # 1. Create a unique filename based on the text (Caching)
+    # This prevents downloading "Please look at the camera" 100 times
+    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
+    file_path = f"audio_cache/{filename}"
+    
+    if not os.path.exists("audio_cache"):
+        os.makedirs("audio_cache")
+
+    # 2. Generate Audio if it doesn't exist
+    if not os.path.exists(file_path):
+        try:
+            # lang='en', tld='co.uk' gives a nice British English voice
+            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts.save(file_path)
+        except Exception as e:
+            print(f" [ERROR] Could not generate TTS: {e}")
+            update_status(prev_status)
+            return
+
+    # 3. Play the MP3 file using mpg321 (Quiet mode)
+    os.system(f"mpg321 -q {file_path}")
     
     update_status(prev_status)
 
 def listen_for_name():
     """Asks for name with error handling"""
     update_status("LISTENING")
-    speak("Face not recognized. Please state your name clearly.")
+    speak("Face not recognized. Please state your name.")
     
     r = sr.Recognizer()
-    try:
-        # Use device_index=None if MIC_INDEX fails, or set specific index
-        mic = sr.Microphone(device_index=MIC_INDEX)
-        
-        with mic as source:
-            r.adjust_for_ambient_noise(source, duration=0.5)
-            # Listen with a timeout so we don't hang forever
-            audio = r.listen(source, timeout=5, phrase_time_limit=5)
-            
-            update_status("THINKING")
-            name = r.recognize_google(audio).lower()
-            return name
-    except sr.WaitTimeoutError:
-        print(" [AUDIO] No speech detected.")
-        return None
-    except sr.RequestError:
-        print(" [AUDIO] Network error (Google API).")
-        speak("I cannot connect to the internet.")
-        return None
-    except Exception as e:
-        print(f" [AUDIO] Microphone Error: {e}")
-        return None
-    finally:
-        update_status("IDLE")
+    
+    with no_alsa_errors():
+        try:
+            mic = sr.Microphone(device_index=MIC_INDEX)
+            with mic as source:
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                # Reduced timeout to prevent hanging
+                audio = r.listen(source, timeout=4, phrase_time_limit=4)
+                
+                update_status("THINKING")
+                name = r.recognize_google(audio).lower()
+                return name
+        except sr.WaitTimeoutError:
+            print(" [AUDIO] Timeout.")
+            return None
+        except sr.UnknownValueError:
+            speak("I did not understand.")
+            return None
+        except Exception as e:
+            print(f" [AUDIO] Error: {e}")
+            return None
+        finally:
+            update_status("IDLE")
 
 # --- WEB SERVER ---
 @app.route('/')
@@ -143,8 +180,8 @@ def exam_logic_loop():
         # 1. Wait for Face
         if current_detected_name is None:
             speak("Please look at the camera.")
-            # Wait 5 seconds before speaking again
-            for _ in range(5): 
+            # Wait loop to avoid repeating too fast
+            for _ in range(6): 
                 if current_detected_name is not None: break
                 time.sleep(1)
             continue
@@ -163,29 +200,31 @@ def exam_logic_loop():
         is_registered = check_registration(name)
         
         if is_registered is True:
-            speak(f"Hello {name}. You may enter.")
-            # Wait for them to leave frame
+            speak(f"Hello {name}.")
+            time.sleep(0.2)
+            speak("You are registered. You may enter.")
+            
+            # Wait for them to leave
             while current_detected_name == name: time.sleep(1)
-            speak("Next.")
+            speak("Next student.")
             
         elif is_registered is False:
-            speak(f"{name}, you are NOT registered.")
+            speak(f"Alert. {name}, you are NOT registered.")
             while current_detected_name == name: time.sleep(1)
                 
         elif is_registered is None:
             if name != "Unknown":
-                speak(f"{name} not in database.")
+                speak(f"I cannot find registration for {name}.")
                 time.sleep(2)
         
         time.sleep(1) 
 
-# --- VISION LOOP (OPTIMIZED) ---
+# --- VISION LOOP ---
 def vision_loop():
     global video_frame, current_detected_name
     
     print(" [VISION] Starting Camera...")
     
-    # Pi 5 / Libcamera Pipeline
     pipeline = (
         "libcamerasrc ! "
         "video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! "
@@ -195,12 +234,10 @@ def vision_loop():
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
     if not cap.isOpened():
-        print(" [ERROR] Camera Failed. Check connections.")
+        print(" [ERROR] Camera Failed.")
         return
 
     frame_count = 0
-    
-    # Cache the results to display them on skipped frames
     cached_face_locations = []
     cached_face_names = []
 
@@ -217,7 +254,6 @@ def vision_loop():
             small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
             
-            # Detect
             cached_face_locations = face_recognition.face_locations(rgb_small_frame)
             face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
             
@@ -240,7 +276,6 @@ def vision_loop():
             
             current_detected_name = detected_name
 
-        # --- DRAWING (Uses cached data on skipped frames) ---
         for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
             top *= 4; right *= 4; bottom *= 4; left *= 4
             color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
