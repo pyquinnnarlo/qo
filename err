@@ -1,6 +1,33 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ gpiodetect
-gpiochip0 [pinctrl-rp1] (54 lines)
-gpiochip10 [gpio-brcmstb@107d508500] (32 lines)
-gpiochip11 [gpio-brcmstb@107d517c00] (15 lines)
-gpiochip12 [gpio-brcmstb@107d517c20] (6 lines)
-gpiochip13 [gpio-brcmstb@107d508520] (4 lines)
+import lgpio
+import time
+
+# On Pi 5, the header is controlled by Chip 4 (rp1)
+# If this fails, try changing 4 to 0
+CHIP = 0 
+
+try:
+    h = lgpio.gpiochip_open(CHIP)
+except:
+    print("Trying chip 4...")
+    h = lgpio.gpiochip_open(4)
+
+SERVO_PIN = 18
+
+print(f"Testing Servo on GPIO {SERVO_PIN}...")
+
+try:
+    while True:
+        print("Left (-90)")
+        # 50Hz, 5% duty cycle
+        lgpio.tx_pwm(h, SERVO_PIN, 50, 5) 
+        time.sleep(1)
+
+        print("Right (90)")
+        # 50Hz, 10% duty cycle
+        lgpio.tx_pwm(h, SERVO_PIN, 50, 10) 
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    lgpio.tx_pwm(h, SERVO_PIN, 50, 0) # Off
+    lgpio.gpiochip_close(h)
+    print("Done")
