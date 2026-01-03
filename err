@@ -1,9 +1,27 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python servo.py 
-/usr/lib/python3/dist-packages/gpiozero/output_devices.py:1509: PWMSoftwareFallback: To reduce servo jitter, use the pigpio pin factory.See https://gpiozero.readthedocs.io/en/stable/api_output.html#servo for more info
-  warnings.warn(PWMSoftwareFallback(
-Testing Servo on GPIO 18 (Pin 12)...
-Opening Gate (90)
-Closing Gate (-90)
-Opening Gate (90)
-Closing Gate (-90)
-Opening Gate (90)
+import lgpio
+import time
+
+# Open the GPIO chip (Pi 5 uses chip 0 or 4, usually 0 for main header)
+h = lgpio.gpiochip_open(0)
+
+SERVO_PIN = 18
+
+print("Testing Raw PWM on GPIO 18...")
+
+try:
+    while True:
+        # 50 Hz frequency (standard for servos)
+        # 5% duty cycle is roughly -90 degrees
+        print("Angle A")
+        lgpio.tx_pwm(h, SERVO_PIN, 50, 5) 
+        time.sleep(1)
+
+        # 10% duty cycle is roughly +90 degrees
+        print("Angle B")
+        lgpio.tx_pwm(h, SERVO_PIN, 50, 10) 
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    lgpio.tx_pwm(h, SERVO_PIN, 50, 0) # Turn off
+    lgpio.gpiochip_close(h)
+    print("Done")
