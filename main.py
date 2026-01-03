@@ -9,10 +9,13 @@ import numpy as np
 import logging
 import hashlib
 import re
+import csv
+from datetime import datetime
 from flask import Flask, render_template, Response
 from gtts import gTTS
 from ctypes import *
 from contextlib import contextmanager
+from gpiozero import LED 
 
 # --- ALSA ERROR SUPPRESSION ---
 ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
@@ -34,12 +37,79 @@ log.setLevel(logging.ERROR)
 
 MIC_INDEX = None # System Default
 
+# -- HARDWARE CONFIG (GPIO) --
+try:
+    red_led = LED(17)
+    green_led = LED(27)
+except Exception as e:
+    print(f" [WARN] GPIO Init Failed (Are you on a Pi?): {e}")
+    class MockLED:
+        def on(self): pass
+        def off(self): pass
+        def blink(self, *args, **kwargs): pass
+    red_led = MockLED()
+    green_led = MockLED()
+
 # Global Variables
 video_frame = None
 known_face_encodings = []
 known_face_names = []
 current_detected_name = None  
 current_status = "SYSTEM READY"
+
+# --- HELPER: LED CONTROLS ---
+def led_busy():
+    green_led.off()
+    red_led.on()
+
+def led_granted():
+    red_led.off()
+    green_led.on()
+
+def led_denied():
+    green_led.off()
+    red_led.blink(on_time=0.1, off_time=0.1)
+
+# --- NEW: LOGGING WITH PHOTOS ---
+def log_attendance(name, student_id, test_name, status, frame=None):
+    """Saves entry attempts to CSV and saves a photo of the person"""
+    
+    # 1. Define Log Filename
+    log_filename = f"attendance_log_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    # 2. Save the Photo (if frame is provided)
+    photo_path = "N/A"
+    if frame is not None:
+        # Create directory if missing
+        if not os.path.exists("attendance_photos"):
+            os.makedirs("attendance_photos")
+        
+        # Clean the name for filename safety
+        safe_name = name.replace(" ", "_")
+        timestamp_str = datetime.now().strftime("%H-%M-%S")
+        
+        # Save Image: attendance_photos/Unknown_12-30-01.jpg
+        photo_filename = f"{status}_{safe_name}_{timestamp_str}.jpg"
+        photo_path = os.path.join("attendance_photos", photo_filename)
+        
+        try:
+            cv2.imwrite(photo_path, frame)
+        except Exception as e:
+            print(f" [ERROR] Could not save photo: {e}")
+
+    # 3. Append to CSV
+    file_exists = os.path.exists(log_filename)
+    
+    with open(log_filename, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        
+        # Write Header if new file
+        if not file_exists:
+            writer.writerow(["Timestamp", "Name", "Student ID", "Test Name", "Status", "Photo Path"])
+            
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        writer.writerow([timestamp, name, student_id, test_name, status, photo_path])
+        print(f" [ADMIN] Logged: {status} for {name} (Photo Saved)")
 
 # --- STEP 1: LOAD DATABASE ---
 def load_student_data():
@@ -65,7 +135,6 @@ def load_student_data():
     print(f" [DB] System Ready.")
 
 def get_student_info(name):
-    """Returns the full dictionary for a student"""
     try:
         with open('students.json', 'r') as f:
             db = json.load(f)
@@ -73,7 +142,7 @@ def get_student_info(name):
     except:
         return None
 
-# --- AUDIO FUNCTIONS (FIXED FOR DELAY) ---
+# --- AUDIO FUNCTIONS ---
 def update_status(status):
     global current_status
     current_status = status
@@ -81,25 +150,17 @@ def update_status(status):
 def speak(text):
     global current_status
     print(f"Robot: {text}")
-    
     prev_status = current_status
     update_status(f"SPEAKING: {text}")
     
-    # Cache audio to make response faster
-    # We hash the ORIGINAL text so the filename is consistent
     filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
     file_path = f"audio_cache/{filename}"
     
-    if not os.path.exists("audio_cache"):
-        os.makedirs("audio_cache")
+    if not os.path.exists("audio_cache"): os.makedirs("audio_cache")
 
     if not os.path.exists(file_path):
         try:
-            # FIX: We add ". . . " to the start. 
-            # This creates silent "padding" in the audio file.
-            # The Pi's audio driver wakes up during the dots, so the words are clear.
             padded_text = ". . . " + text
-            
             tts = gTTS(text=padded_text, lang='en', tld='co.uk')
             tts.save(file_path)
         except Exception as e:
@@ -107,19 +168,12 @@ def speak(text):
             update_status(prev_status)
             return
 
-    # Small Python sleep to ensure process priority before playing
     time.sleep(0.1)
-    
-    # Play the file
     os.system(f"mpg321 -q {file_path}")
-    
     update_status(prev_status)
 
 def listen(prompt_text=None):
-    """Generic listener"""
-    if prompt_text:
-        speak(prompt_text)
-
+    if prompt_text: speak(prompt_text)
     update_status("LISTENING")
     r = sr.Recognizer()
     
@@ -129,7 +183,6 @@ def listen(prompt_text=None):
             with mic as source:
                 r.adjust_for_ambient_noise(source, duration=0.5)
                 audio = r.listen(source, timeout=5, phrase_time_limit=5)
-                
                 update_status("THINKING")
                 text = r.recognize_google(audio).lower()
                 print(f" [User said]: {text}")
@@ -146,87 +199,104 @@ def listen(prompt_text=None):
             update_status("IDLE")
 
 def clean_id(text):
-    """Removes spaces and dashes to compare IDs (e.g., 'stu 001' -> 'stu001')"""
     if not text: return ""
     return re.sub(r'[\s-]', '', text).lower()
 
-# --- LOGIC LOOP (STRICT SECURITY MODE) ---
+# --- LOGIC LOOP (ADMINISTRATOR) ---
 def exam_logic_loop():
-    global current_detected_name
+    global current_detected_name, video_frame
     
+    led_busy()
     time.sleep(3) 
     speak("Examination Proctor System Online.")
     
     while True:
         update_status("WAITING FOR STUDENT")
+        led_busy()
         
         # 1. Wait for a face
         if current_detected_name is None:
-            if int(time.time()) % 15 == 0:  # Spoke too often before, changed to 15s
+            if int(time.time()) % 15 == 0:
                 speak("Please step forward for identification.")
             time.sleep(1)
             continue
             
-        # 2. Face Detected - STRICT CHECK
+        # 2. Face Detected
         name = current_detected_name
         update_status(f"IDENTIFYING: {name}")
         
         # --- SECURITY FIX: REJECT UNKNOWN FACES ---
         if name == "Unknown":
+            led_denied()
             speak("Face not recognized.")
             time.sleep(0.5)
-            speak("Access Denied. Your face does not match our records.")
-            speak("Please step aside and see a human administrator.")
+            speak("Access Denied.")
             
-            while current_detected_name is not None:
-                time.sleep(1)
+            # LOGGING WITH PHOTO
+            log_attendance("Unknown", "N/A", "N/A", "DENIED_FACE_MISMATCH", video_frame)
+            
+            speak("Please step aside.")
+            while current_detected_name is not None: time.sleep(1)
             continue 
             
-        # 3. Face is Known - Proceed to Verification
+        # 3. Face is Known
         speak(f"Biometric match found. Hello {name}.")
         
-        # Retrieve Data
         student_data = get_student_info(name)
-        
         if not student_data:
-            speak(f"Error. Student {name} has no registration data file.")
+            led_denied()
+            speak(f"Error. Student {name} has no registration data.")
+            # LOGGING WITH PHOTO
+            log_attendance(name, "Unknown", "N/A", "DENIED_NO_DATA", video_frame)
             while current_detected_name is not None: time.sleep(1)
             continue
 
-        # 4. Two-Factor Authentication (Face + Voice ID)
+        # 4. Voice ID Check
         correct_id = student_data['id'].lower()
         spoken_id = listen("To confirm your identity, please state your Student I D.")
         
         if spoken_id and clean_id(spoken_id) == clean_id(correct_id):
             speak("Identity confirmed.")
         else:
-            speak(f"Authentication Failed. I heard {spoken_id}, but records expect {correct_id}.")
+            led_denied()
+            speak(f"Authentication Failed.")
             speak("Access Denied.")
+            
+            # LOGGING WITH PHOTO
+            log_attendance(name, student_data['id'], "N/A", "DENIED_WRONG_VOICE_ID", video_frame)
+            
             while current_detected_name is not None: time.sleep(1)
             continue
 
         # 5. Ask for Test
         test_name = listen("What test are you writing today?")
-        if test_name:
-            speak(f"Logging entry for {test_name}.")
+        if not test_name: test_name = "Not Stated"
+        speak(f"Logging entry for {test_name}.")
         
-        # 6. Final Registration Check & Rules
+        # 6. Final Registration Check
         if student_data['registered']:
             speak("Registration Verified. Listen strictly to the rules.")
             time.sleep(0.3)
-            speak("1. No electronic devices. Phones, watches, and glasses must be removed.")
+            speak("1. No electronic devices.")
             time.sleep(0.3)
             speak("2. Keep your eyes on your own paper.")
-            time.sleep(0.3)
-            speak("Violation will result in immediate failure.")
             time.sleep(0.5)
             speak("You may enter. Good luck.")
+            
+            led_granted()
+            # LOGGING WITH PHOTO (Success)
+            log_attendance(name, student_data['id'], test_name, "ALLOWED_ENTRY", video_frame)
             
             while current_detected_name is not None: time.sleep(1)
             speak("Next student.")
             
         else:
+            led_denied()
             speak(f"Alert. {name}, you are NOT registered for this exam.")
+            
+            # LOGGING WITH PHOTO (Denied)
+            log_attendance(name, student_data['id'], test_name, "DENIED_NOT_REGISTERED", video_frame)
+            
             speak("Please leave the area immediately.")
             while current_detected_name is not None: time.sleep(1)
 
