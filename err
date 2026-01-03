@@ -11,7 +11,7 @@ import hashlib
 import re
 import csv
 from datetime import datetime
-from flask import Flask, render_template, Response
+from flask import Flask, render_template, Response, request, jsonify
 from gtts import gTTS
 from ctypes import *
 from contextlib import contextmanager
@@ -37,15 +37,12 @@ log.setLevel(logging.ERROR)
 
 MIC_INDEX = None # System Default
 
-# -- HARDWARE CONFIG (GPIO) --
-# GPIO 17 = Pin 11 (Red LED)
-# GPIO 27 = Pin 13 (Green LED)
+# -- HARDWARE CONFIG --
 try:
     red_led = LED(17)
     green_led = LED(27)
 except Exception as e:
-    print(f" [WARN] GPIO Init Failed (Are you on a Pi?): {e}")
-    # Mock classes so code doesn't crash on PC
+    print(f" [WARN] GPIO Init Failed: {e}")
     class MockLED:
         def on(self): pass
         def off(self): pass
@@ -59,42 +56,51 @@ known_face_encodings = []
 known_face_names = []
 current_detected_name = None  
 current_status = "SYSTEM READY"
+is_registering = False # Pauses the exam logic while someone types
 
 # --- HELPER: LED CONTROLS ---
 def led_busy():
-    """Solid Red: System is scanning/busy"""
     green_led.off()
     red_led.on()
 
 def led_granted():
-    """Solid Green: Entry allowed"""
     red_led.off()
     green_led.on()
 
 def led_denied():
-    """Blinking Red: Entry denied"""
     green_led.off()
-    # Blink: on 0.1s, off 0.1s, background thread
     red_led.blink(on_time=0.1, off_time=0.1)
 
 # --- LOGGING FUNCTION ---
-def log_attendance(name, student_id, test_name, status):
-    filename = f"attendance_log_{datetime.now().strftime('%Y-%m-%d')}.csv"
-    if not os.path.exists(filename):
-        with open(filename, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Timestamp", "Name", "Student ID", "Test Name", "Status"])
+def log_attendance(name, student_id, test_name, status, frame=None):
+    log_filename = f"attendance_log_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    photo_path = "N/A"
+    if frame is not None:
+        if not os.path.exists("attendance_photos"): os.makedirs("attendance_photos")
+        safe_name = name.replace(" ", "_")
+        timestamp_str = datetime.now().strftime("%H-%M-%S")
+        photo_filename = f"{status}_{safe_name}_{timestamp_str}.jpg"
+        photo_path = os.path.join("attendance_photos", photo_filename)
+        try:
+            cv2.imwrite(photo_path, frame)
+        except Exception as e:
+            print(f" [ERROR] Could not save photo: {e}")
 
-    with open(filename, mode='a', newline='') as file:
+    file_exists = os.path.exists(log_filename)
+    with open(log_filename, mode='a', newline='') as file:
         writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Timestamp", "Name", "Student ID", "Test Name", "Status", "Photo Path"])
         timestamp = datetime.now().strftime("%H:%M:%S")
-        writer.writerow([timestamp, name, student_id, test_name, status])
-        print(f" [ADMIN] Logged: {status} for {name}")
+        writer.writerow([timestamp, name, student_id, test_name, status, photo_path])
 
-# --- STEP 1: LOAD DATABASE ---
+# --- DATABASE MANAGEMENT ---
 def load_student_data():
     print(" [DB] Loading Student Faces...")
     global known_face_encodings, known_face_names
+    known_face_encodings = []
+    known_face_names = []
     
     path = "student_pics"
     if not os.path.exists(path):
@@ -111,8 +117,7 @@ def load_student_data():
                 name = os.path.splitext(file)[0]
                 known_face_names.append(name)
                 print(f"   + Loaded: {name}")
-    
-    print(f" [DB] System Ready.")
+    print(f" [DB] System Ready. Total: {len(known_face_names)}")
 
 def get_student_info(name):
     try:
@@ -129,6 +134,8 @@ def update_status(status):
 
 def speak(text):
     global current_status
+    if is_registering: return # Don't speak if user is typing
+    
     print(f"Robot: {text}")
     prev_status = current_status
     update_status(f"SPEAKING: {text}")
@@ -143,8 +150,7 @@ def speak(text):
             padded_text = ". . . " + text
             tts = gTTS(text=padded_text, lang='en', tld='co.uk')
             tts.save(file_path)
-        except Exception as e:
-            print(f" [ERROR] TTS Failed: {e}")
+        except Exception:
             update_status(prev_status)
             return
 
@@ -153,6 +159,7 @@ def speak(text):
     update_status(prev_status)
 
 def listen(prompt_text=None):
+    if is_registering: return None
     if prompt_text: speak(prompt_text)
     update_status("LISTENING")
     r = sr.Recognizer()
@@ -164,16 +171,8 @@ def listen(prompt_text=None):
                 r.adjust_for_ambient_noise(source, duration=0.5)
                 audio = r.listen(source, timeout=5, phrase_time_limit=5)
                 update_status("THINKING")
-                text = r.recognize_google(audio).lower()
-                print(f" [User said]: {text}")
-                return text
-        except sr.WaitTimeoutError:
-            return None
-        except sr.UnknownValueError:
-            speak("I did not understand.")
-            return None
-        except Exception:
-            speak("Audio error.")
+                return r.recognize_google(audio).lower()
+        except:
             return None
         finally:
             update_status("IDLE")
@@ -182,114 +181,9 @@ def clean_id(text):
     if not text: return ""
     return re.sub(r'[\s-]', '', text).lower()
 
-# --- LOGIC LOOP (ADMINISTRATOR) ---
-def exam_logic_loop():
-    global current_detected_name, video_frame
-    
-    # Initial State
-    led_busy() # Red Solid
-    time.sleep(3) 
-    speak("Examination Proctor System Online.")
-    
-    while True:
-        update_status("WAITING FOR STUDENT")
-        led_busy() # Ensure Red is Solid
-        
-        # 1. Wait for a face
-        if current_detected_name is None:
-            if int(time.time()) % 15 == 0:
-                speak("Please step forward for identification.")
-            time.sleep(1)
-            continue
-            
-        # 2. Face Detected - STRICT CHECK
-        name = current_detected_name
-        update_status(f"IDENTIFYING: {name}")
-        
-        # --- SECURITY FIX: REJECT UNKNOWN FACES ---
-        if name == "Unknown":
-            led_denied() # Blink Red
-            speak("Face not recognized.")
-            time.sleep(0.5)
-            speak("Access Denied.")
-            
-            # Log
-            log_attendance("Unknown", "N/A", "N/A", "DENIED_FACE_MISMATCH")
-            
-            speak("Please step aside.")
-            while current_detected_name is not None: time.sleep(1)
-            continue 
-            
-        # 3. Face is Known
-        speak(f"Biometric match found. Hello {name}.")
-        
-        student_data = get_student_info(name)
-        if not student_data:
-            led_denied()
-            speak(f"Error. Student {name} has no registration data.")
-            log_attendance(name, "Unknown", "N/A", "DENIED_NO_DATA")
-            while current_detected_name is not None: time.sleep(1)
-            continue
-
-        # 4. Voice ID Check
-        correct_id = student_data['id'].lower()
-        spoken_id = listen("To confirm your identity, please state your Student I D.")
-        
-        if spoken_id and clean_id(spoken_id) == clean_id(correct_id):
-            speak("Identity confirmed.")
-        else:
-            led_denied()
-            speak(f"Authentication Failed.")
-            speak("Access Denied.")
-            
-            log_attendance(name, student_data['id'], "N/A", "DENIED_WRONG_VOICE_ID")
-            
-            while current_detected_name is not None: time.sleep(1)
-            continue
-
-        # 5. Ask for Test
-        test_name = listen("What test are you writing today?")
-        if not test_name: test_name = "Not Stated"
-        speak(f"Logging entry for {test_name}.")
-        
-        # 6. Final Registration Check
-        if student_data['registered']:
-            speak("Registration Verified. Listen strictly to the rules.")
-            time.sleep(0.3)
-            speak("1. No electronic devices.")
-            time.sleep(0.3)
-            speak("2. Keep your eyes on your own paper.")
-            time.sleep(0.5)
-            speak("You may enter. Good luck.")
-            
-            # --- SUCCESS ---
-            led_granted() # Green ON
-            log_attendance(name, student_data['id'], test_name, "ALLOWED_ENTRY")
-            
-            # Keep Green while student enters
-            while current_detected_name is not None: time.sleep(1)
-            speak("Next student.")
-            
-        else:
-            led_denied() # Blink Red
-            speak(f"Alert. {name}, you are NOT registered for this exam.")
-            
-            log_attendance(name, student_data['id'], test_name, "DENIED_NOT_REGISTERED")
-            
-            speak("Please leave the area immediately.")
-            while current_detected_name is not None: time.sleep(1)
-
-# --- WEB & VISION SETUP ---
+# --- FLASK ROUTES ---
 @app.route('/')
 def index(): return render_template('index.html')
-
-def generate_frames():
-    global video_frame
-    while True:
-        if video_frame is not None:
-            ret, buffer = cv2.imencode('.jpg', video_frame)
-            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        time.sleep(0.04)
 
 @app.route('/video_feed')
 def video_feed(): return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -302,10 +196,152 @@ def status_feed():
             time.sleep(0.5)
     return Response(generate(), mimetype="text/event-stream")
 
+# --- NEW: REGISTRATION ROUTES ---
+@app.route('/toggle_reg_mode', methods=['POST'])
+def toggle_reg_mode():
+    global is_registering
+    data = request.json
+    is_registering = data.get('active', False)
+    if is_registering:
+        update_status("REGISTRATION MODE")
+    else:
+        update_status("SYSTEM READY")
+    return jsonify({"status": "ok"})
+
+@app.route('/register_student', methods=['POST'])
+def register_student():
+    global video_frame
+    try:
+        data = request.json
+        name = data['name'].strip().lower().replace(" ", "_") # internal safe name
+        display_name = data['name'].strip()
+        student_id = data['id'].strip().upper()
+        
+        # 1. Save Image
+        if video_frame is None:
+            return jsonify({"status": "error", "message": "Camera not ready"})
+            
+        img_path = f"student_pics/{name}.jpg"
+        cv2.imwrite(img_path, video_frame)
+        
+        # 2. Update JSON
+        db_file = 'students.json'
+        if not os.path.exists(db_file):
+            with open(db_file, 'w') as f: json.dump({}, f)
+            
+        with open(db_file, 'r') as f:
+            db = json.load(f)
+            
+        db[name] = {
+            "registered": True,
+            "id": student_id
+        }
+        
+        with open(db_file, 'w') as f:
+            json.dump(db, f, indent=4)
+            
+        # 3. Reload AI
+        load_student_data()
+        
+        return jsonify({"status": "success", "message": f"Registered {display_name}"})
+        
+    except Exception as e:
+        print(f"Error registering: {e}")
+        return jsonify({"status": "error", "message": str(e)})
+
+def generate_frames():
+    global video_frame
+    while True:
+        if video_frame is not None:
+            ret, buffer = cv2.imencode('.jpg', video_frame)
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        time.sleep(0.04)
+
+# --- LOGIC LOOP ---
+def exam_logic_loop():
+    global current_detected_name, video_frame
+    
+    led_busy()
+    time.sleep(3) 
+    speak("Examination Proctor System Online.")
+    
+    while True:
+        # Pause logic if a student is currently typing on the keyboard
+        if is_registering:
+            time.sleep(1)
+            continue
+
+        update_status("WAITING FOR STUDENT")
+        led_busy()
+        
+        if current_detected_name is None:
+            if int(time.time()) % 15 == 0:
+                speak("Please step forward for identification.")
+            time.sleep(1)
+            continue
+            
+        name = current_detected_name
+        update_status(f"IDENTIFYING: {name}")
+        
+        if name == "Unknown":
+            led_denied()
+            speak("Face not recognized.")
+            time.sleep(0.5)
+            speak("Access Denied.")
+            log_attendance("Unknown", "N/A", "N/A", "DENIED_FACE_MISMATCH", video_frame)
+            speak("Please step aside or click Register.")
+            while current_detected_name is not None and not is_registering: time.sleep(1)
+            continue 
+            
+        speak(f"Biometric match found. Hello {name}.")
+        
+        student_data = get_student_info(name)
+        if not student_data:
+            led_denied()
+            speak(f"Error. No data for {name}.")
+            while current_detected_name is not None and not is_registering: time.sleep(1)
+            continue
+
+        correct_id = student_data['id'].lower()
+        spoken_id = listen("To confirm your identity, please state your Student I D.")
+        
+        if spoken_id and clean_id(spoken_id) == clean_id(correct_id):
+            speak("Identity confirmed.")
+        else:
+            led_denied()
+            speak(f"Authentication Failed.")
+            log_attendance(name, student_data['id'], "N/A", "DENIED_WRONG_VOICE_ID", video_frame)
+            while current_detected_name is not None and not is_registering: time.sleep(1)
+            continue
+
+        test_name = listen("What test are you writing today?")
+        if not test_name: test_name = "Not Stated"
+        speak(f"Logging entry for {test_name}.")
+        
+        if student_data['registered']:
+            speak("Registration Verified. Listen strictly to the rules.")
+            time.sleep(0.3)
+            speak("1. No electronic devices.")
+            time.sleep(0.3)
+            speak("2. Keep your eyes on your own paper.")
+            time.sleep(0.5)
+            speak("You may enter. Good luck.")
+            led_granted()
+            log_attendance(name, student_data['id'], test_name, "ALLOWED_ENTRY", video_frame)
+            while current_detected_name is not None and not is_registering: time.sleep(1)
+            speak("Next student.")
+        else:
+            led_denied()
+            speak(f"Alert. {name}, you are NOT registered for this exam.")
+            log_attendance(name, student_data['id'], test_name, "DENIED_NOT_REGISTERED", video_frame)
+            speak("Please leave the area immediately.")
+            while current_detected_name is not None and not is_registering: time.sleep(1)
+
 def vision_loop():
     global video_frame, current_detected_name
     print(" [VISION] Starting Camera...")
     
+    # Standard USB Camera (Change to gstreamer pipeline if using Pi Cam)
     pipeline = "libcamerasrc ! video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink"
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
@@ -338,6 +374,7 @@ def vision_loop():
                 detected = name
             current_detected_name = detected
 
+        # Draw boxes
         for (t, r, b, l), name in zip(cached_locs, cached_names):
             t*=4; r*=4; b*=4; l*=4
             color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
@@ -350,3 +387,231 @@ if __name__ == "__main__":
     threading.Thread(target=vision_loop, daemon=True).start()
     threading.Thread(target=exam_logic_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, debug=False)
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proctor AI - Registration</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+
+        /* --- FACE CONTAINER --- */
+        .face {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 50px;
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .eyes-row { display: flex; gap: 80px; }
+        .eye {
+            width: 100px;
+            height: 120px;
+            background: #00ffcc;
+            border-radius: 40%;
+            box-shadow: 0 0 20px #00ffcc;
+            transition: all 0.2s;
+        }
+        .mouth {
+            width: 150px;
+            height: 10px;
+            background: #00ffcc;
+            border-radius: 10px;
+            box-shadow: 0 0 10px #00ffcc;
+            transition: all 0.1s;
+        }
+
+        /* STATES */
+        .listening .eye { background: #00ff00; height: 140px; box-shadow: 0 0 40px #00ff00; }
+        .listening .mouth { background: #00ff00; width: 100px; }
+        .thinking .eye { background: #ffaa00; height: 50px; box-shadow: 0 0 30px #ffaa00; animation: pulse 0.5s infinite alternate; }
+        .thinking .mouth { background: #ffaa00; width: 50px; }
+        .speaking .eye { background: #00ccff; height: 100px; }
+        .speaking .mouth { background: #00ccff; animation: talk 0.2s infinite alternate; }
+        @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.1); } }
+        @keyframes talk { 0% { height: 10px; width: 150px; border-radius: 10px; } 100% { height: 60px; width: 100px; border-radius: 50%; } }
+
+        /* CAMERA */
+        .camera-feed {
+            width: 400px;
+            border: 2px solid #333;
+            border-radius: 10px;
+        }
+        
+        #status-text { margin-top: 20px; font-size: 20px; text-transform: uppercase; letter-spacing: 2px; }
+
+        /* --- REGISTRATION BUTTON & MODAL --- */
+        .reg-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #003300;
+            color: #0f0;
+            border: 2px solid #0f0;
+            padding: 10px 20px;
+            font-family: monospace;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+        .reg-btn:hover { background: #0f0; color: #000; }
+
+        #reg-modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        .modal-content {
+            background: #111;
+            border: 2px solid #0f0;
+            padding: 40px;
+            text-align: center;
+            width: 400px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            background: #000;
+            border: 1px solid #0f0;
+            color: #0f0;
+            font-family: monospace;
+        }
+
+        .action-btn {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <button class="reg-btn" onclick="openRegistration()">Register New Student</button>
+
+    <div id="face-container" class="face">
+        <div class="eyes-row">
+            <div class="eye left"></div>
+            <div class="eye right"></div>
+        </div>
+        <div class="mouth"></div>
+    </div>
+
+    <!-- Live Camera Stream -->
+    <img src="/video_feed" class="camera-feed" alt="Vision">
+    <div id="status-text">SYSTEM READY</div>
+
+    <!-- REGISTRATION MODAL -->
+    <div id="reg-modal">
+        <div class="modal-content">
+            <h2 style="color:#0f0">NEW STUDENT ENTRY</h2>
+            <p>Look at the camera above.</p>
+            <input type="text" id="reg-name" placeholder="Full Name (e.g. John Doe)">
+            <input type="text" id="reg-id" placeholder="Student ID (e.g. STU-001)">
+            <button class="action-btn" onclick="submitRegistration()">CAPTURE & REGISTER</button>
+            <button class="action-btn" style="background:#300; color:#fff" onclick="closeRegistration()">CANCEL</button>
+        </div>
+    </div>
+
+    <script>
+        const face = document.getElementById('face-container');
+        const text = document.getElementById('status-text');
+        const modal = document.getElementById('reg-modal');
+
+        // Toggle Registration Mode (Pauses robot logic)
+        function setRegMode(active) {
+            fetch('/toggle_reg_mode', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({active: active})
+            });
+        }
+
+        function openRegistration() {
+            modal.style.display = 'flex';
+            setRegMode(true);
+        }
+
+        function closeRegistration() {
+            modal.style.display = 'none';
+            setRegMode(false);
+        }
+
+        function submitRegistration() {
+            const name = document.getElementById('reg-name').value;
+            const id = document.getElementById('reg-id').value;
+
+            if(!name || !id) {
+                alert("Please fill in Name and ID");
+                return;
+            }
+
+            text.innerText = "REGISTERING...";
+
+            fetch('/register_student', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name, id: id})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if(data.status === 'success') {
+                    alert("Registration Successful!\nYou can now enter.");
+                    closeRegistration();
+                } else {
+                    alert("Error: " + data.message);
+                }
+            });
+        }
+
+        // Random blinking
+        setInterval(() => {
+            if (face.className === 'face') {
+                face.classList.add('blink');
+                document.querySelectorAll('.eye').forEach(e => e.style.height = '10px');
+                setTimeout(() => {
+                    face.classList.remove('blink');
+                    document.querySelectorAll('.eye').forEach(e => e.style.height = '');
+                }, 200);
+            }
+        }, 4000);
+
+        // Status Feed
+        const evtSource = new EventSource("/status_feed");
+        evtSource.onmessage = function(event) {
+            const state = event.data;
+            text.innerText = state;
+            face.className = 'face';
+            if (state.includes("LISTENING")) face.classList.add('listening');
+            if (state.includes("THINKING")) face.classList.add('thinking');
+            if (state.includes("SPEAKING")) face.classList.add('speaking');
+        };
+    </script>
+</body>
+</html>
