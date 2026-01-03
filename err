@@ -1,19 +1,13 @@
-from gpiozero import AngularServo
-from time import sleep
-
-# Configure the servo exactly like in your main code
-servo = AngularServo(18, min_angle=-90, max_angle=90, min_pulse_width=0.0005, max_pulse_width=0.0025)
-
-print("Testing Servo on GPIO 18...")
-
-try:
-    while True:
-        print("Opening Gate (90)")
-        servo.angle = 90
-        sleep(2)
-        
-        print("Closing Gate (-90)")
-        servo.angle = -90
-        sleep(2)
-except KeyboardInterrupt:
-    print("Test Stopped")
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python servo.py 
+/usr/lib/python3/dist-packages/gpiozero/output_devices.py:1509: PWMSoftwareFallback: To reduce servo jitter, use the pigpio pin factory.See https://gpiozero.readthedocs.io/en/stable/api_output.html#servo for more info
+  warnings.warn(PWMSoftwareFallback(
+Testing Servo on GPIO 18...
+Opening Gate (90)
+Closing Gate (-90)
+Opening Gate (90)
+Closing Gate (-90)
+Opening Gate (90)
+Closing Gate (-90)
+Opening Gate (90)
+Closing Gate (-90)
+Opening Gate (90)
