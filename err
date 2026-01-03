@@ -1,71 +1,132 @@
-# --- VISION LOOP ---
-def vision_loop():
-    global video_frame, current_detected_name
-    
-    print(" [VISION] Attempting to start camera via GStreamer...")
-
-    # --- OPTION 1: Raspberry Pi Camera Module (CSI) ---
-    # This pipeline is specific for Pi 5 / Bookworm OS
-    pipeline = (
-        "libcamerasrc ! "
-        "video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! "
-        "videoconvert ! "
-        "video/x-raw, format=BGR ! appsink"
-    )
-    
-    # Open the camera using the GStreamer backend
-    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-    
-    # --- OPTION 2: If using a USB WebCam, uncomment the line below instead ---
-    # cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        print(" [ERROR] Failed to open camera! Ensure 'gstreamer1.0-libcamera' is installed.")
-        return
-
-    print(" [VISION] Camera started successfully.")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret: 
-            print(" [ERROR] Camera is open but failed to read a frame.")
-            time.sleep(1)
-            continue
-        
-        # Resize for speed (1/4 size)
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-        
-        face_locations = face_recognition.face_locations(rgb_small_frame)
-        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-        
-        detected_name = None # Default to None if no face
-
-        if face_encodings:
-            for face_encoding in face_encodings:
-                matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                name = "Unknown"
-
-                face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                if len(face_distances) > 0:
-                    best_match_index = np.argmin(face_distances)
-                    if matches[best_match_index]:
-                        name = known_face_names[best_match_index]
-                
-                detected_name = name
-        
-        # Update global variable for the logic loop
-        current_detected_name = detected_name 
-        
-        # Draw GUI (Boxes and Names)
-        for (top, right, bottom, left), name in zip(face_locations, [detected_name]*len(face_locations)):
-            # Scale coordinates back up (x4)
-            top *= 4; right *= 4; bottom *= 4; left *= 4
-            
-            # Color: Green if recognized, Red if Unknown
-            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-            
-            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-            cv2.putText(frame, str(name), (left, bottom + 20), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-
-        video_frame = frame
+640x480-YUYV/Rec709
+[0:21:05.995071626] [2128]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 - Selected sensor format: 640x480-SGBRG10_1X10/RAW - Selected CFE format: 640x480-PC1g/RAW
+[ WARN:0@6.961] global cap_gstreamer.cpp:1754 open OpenCV | GStreamer warning: unable to query duration of stream
+[ WARN:0@6.961] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
+ [VISION] Camera started successfully.
+Robot: System Online.
+Robot: Please look at the camera to scan your face.
+Robot: Please look at the camera to scan your face.
+Robot: Please look at the camera to scan your face.
+Robot: Face not recognized. Please state your name clearly.
+ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.front.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM front
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.rear
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.center_lfe
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.side
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround40.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround40
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround41
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround50
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround51
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround71.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround71
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM iec958
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
+ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
+ALSA lib pcm_direct.c:1257:(snd1_pcm_direct_initialize_slave) requested or auto-format is not available
+ALSA lib pcm_dmix.c:1012:(snd_pcm_dmix_open) unable to initialize slave
+Cannot connect to server socket err = No such file or directory
+Cannot connect to server request channel
+jack server is not running or cannot be started
+JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.front.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM front
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.rear
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.center_lfe
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.side
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround40.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround40
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround41
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround50
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround51
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround71.0:CARD=0'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround71
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM iec958
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
+ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
+ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
+ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
+ALSA lib pcm_direct.c:1257:(snd1_pcm_direct_initialize_slave) requested or auto-format is not available
+ALSA lib pcm_dmix.c:1012:(snd_pcm_dmix_open) unable to initialize slave
+Cannot connect to server socket err = No such file or directory
+Cannot connect to server request channel
+jack server is not running or cannot be started
+JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+/usr/include/c++/14/bits/stl_queue.h:233: std::queue<_Tp, _Sequence>::reference std::queue<_Tp, _Sequence>::front() [with _Tp = std::unique_ptr<RequestWrap>; _Sequence = std::deque<std::unique_ptr<RequestWrap>, std::allocator<std::unique_ptr<RequestWrap> > >; reference = std::unique_ptr<RequestWrap>&]: Assertion '!this->empty()' failed.
+Aborted
