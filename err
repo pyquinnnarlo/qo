@@ -1,21 +1,19 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python main.py 
- [DB] Loading Student Faces...
-   + Loaded: john_doe
- [DB] System Ready. Total: 1
- [VISION] Starting Camera...
- * Serving Flask app 'main'
- * Debug mode: off
-[2:07:18.434500957] [4162]  INFO Camera camera_manager.cpp:340 libcamera v0.6.0+rpt20251202
-[2:07:18.444818824] [4168]  INFO RPI pisp.cpp:720 libpisp version 1.3.0
-[2:07:18.448026984] [4168]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/pisp/ov5647.json
-[2:07:18.455061043] [4168]  INFO Camera camera_manager.cpp:223 Adding camera '/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36' for pipeline handler rpi/pisp
-[2:07:18.455119006] [4168]  INFO RPI pisp.cpp:1181 Registered camera /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 to CFE device /dev/media2 and ISP device /dev/media0 using PiSP variant BCM2712_D0
-[2:07:18.458482832] [4171]  INFO Camera camera.cpp:1215 configuring streams: (0) 640x480-YUYV/Rec709
-[2:07:18.458777684] [4168]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 - Selected sensor format: 640x480-SGBRG10_1X10/RAW - Selected CFE format: 640x480-PC1g/RAW
-[ WARN:0@7.499] global cap_gstreamer.cpp:1754 open OpenCV | GStreamer warning: unable to query duration of stream
-[ WARN:0@7.499] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
-Robot: Examination Proctor System Online.
-Robot: Please step forward for identification.
- [DB] Loading Student Faces...
-malloc(): unaligned tcache chunk detected
-Aborted
+from gpiozero import AngularServo
+from time import sleep
+
+# Configure the servo exactly like in your main code
+servo = AngularServo(18, min_angle=-90, max_angle=90, min_pulse_width=0.0005, max_pulse_width=0.0025)
+
+print("Testing Servo on GPIO 18...")
+
+try:
+    while True:
+        print("Opening Gate (90)")
+        servo.angle = 90
+        sleep(2)
+        
+        print("Closing Gate (-90)")
+        servo.angle = -90
+        sleep(2)
+except KeyboardInterrupt:
+    print("Test Stopped")
