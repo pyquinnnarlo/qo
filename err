@@ -6,3 +6,18 @@ Angle A
 Angle B
 Angle A
 Angle B
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python servo.py 
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/exam/servo.py", line 5, in <module>
+    h = lgpio.gpiochip_open(1)
+  File "/usr/lib/python3/dist-packages/lgpio.py", line 645, in gpiochip_open
+    return _u2i(handle)
+  File "/usr/lib/python3/dist-packages/lgpio.py", line 458, in _u2i
+    raise error(error_text(v))
+lgpio.error: 'can not open gpiochip'
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python servo.py 
+Testing Raw PWM on GPIO 18...
+1
+Angle A
+Angle B
+Angle A
