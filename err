@@ -1,3 +1,7 @@
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ pip install rpi-lgpio
+Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
+Requirement already satisfied: rpi-lgpio in /usr/lib/python3/dist-packages (0.6)
+Requirement already satisfied: lgpio>=0.1.0.1 in /usr/lib/python3/dist-packages (from rpi-lgpio) (0.2.2.0)
 (venv) fyplg@FYPLG:~/Desktop/pi/exam $ python servo.py 
 /usr/lib/python3/dist-packages/gpiozero/output_devices.py:1509: PWMSoftwareFallback: To reduce servo jitter, use the pigpio pin factory.See https://gpiozero.readthedocs.io/en/stable/api_output.html#servo for more info
   warnings.warn(PWMSoftwareFallback(
@@ -6,8 +10,3 @@ Opening Gate (90)
 Closing Gate (-90)
 Opening Gate (90)
 Closing Gate (-90)
-Opening Gate (90)
-Closing Gate (-90)
-Opening Gate (90)
-Closing Gate (-90)
-Opening Gate (90)
