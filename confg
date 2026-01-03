@@ -1,84 +1,315 @@
-Robot: Please step forward for identification.
-Robot: Biometric match found. Hello quinn.
-Robot: To confirm your identity, please state your Student I D.
-Cannot connect to server socket err = No such file or directory
-Cannot connect to server request channel
-jack server is not running or cannot be started
-JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
-JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
- [AUDIO ERROR] Device index out of range (1 devices available; device index should be between 0 and 0 inclusive)
-Robot: Audio error.
-Robot: Authentication Failed.
-^Cterminate called without an active exception
-Aborted
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ ^C
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python check.py 
-Searching for microphones...
-ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.front.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM front
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.rear
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.center_lfe
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.side
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround21
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround40.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround40
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround41
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround50
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround51.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround51
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.surround71.0:CARD=0'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM surround71
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM iec958
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
-ALSA lib confmisc.c:1377:(snd_func_refer) Unable to find definition 'cards.0.pcm.iec958.0:CARD=0,AES0=4,AES1=130,AES2=0,AES3=2'
-ALSA lib conf.c:5205:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
-ALSA lib conf.c:5728:(snd_config_expand) Evaluate error: No such file or directory
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM spdif
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.modem
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
-ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.phoneline
-ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
-ALSA lib pcm_dmix.c:1000:(snd_pcm_dmix_open) unable to open slave
-Cannot connect to server socket err = No such file or directory
-Cannot connect to server request channel
-jack server is not running or cannot be started
-JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
-JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+import threading
+import cv2
+import speech_recognition as sr
+import os
+import time
+import json
+import face_recognition
+import numpy as np
+import logging
+import hashlib
+import re
+import csv
+from datetime import datetime
+from flask import Flask, render_template, Response
+from gtts import gTTS
+from ctypes import *
+from contextlib import contextmanager
 
-Found 2 devices:
-Index 0: vc4-hdmi-1: MAI PCM i2s-hifi-0 (hw:1,0)
-Index 1: USB PnP Sound Device: Audio (hw:2,0)
+# --- ALSA ERROR SUPPRESSION ---
+ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
 
-Look for your USB microphone name above (e.g., 'USB PnP Audio Device').
-Update MIC_INDEX in main.py with that number.
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ 
+@contextmanager
+def no_alsa_errors():
+    asound = cdll.LoadLibrary('libasound.so')
+    asound.snd_lib_error_set_handler(c_error_handler)
+    yield
+    asound.snd_lib_error_set_handler(None)
 
+# --- CONFIGURATION ---
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+# Audio Configuration
+MIC_INDEX = 1 
+
+# Global Variables
+video_frame = None
+known_face_encodings = []
+known_face_names = []
+current_detected_name = None  
+current_status = "SYSTEM READY"
+
+# --- LOGGING FUNCTION ---
+def log_attendance(name, student_id, test_name, status, frame=None):
+    """Saves entry log to CSV and saves photo evidence"""
+    log_filename = f"attendance_log_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    photo_path = "N/A"
+    if frame is not None:
+        if not os.path.exists("attendance_photos"): os.makedirs("attendance_photos")
+        safe_name = name.replace(" ", "_")
+        timestamp_str = datetime.now().strftime("%H-%M-%S")
+        photo_filename = f"{status}_{safe_name}_{timestamp_str}.jpg"
+        photo_path = os.path.join("attendance_photos", photo_filename)
+        try:
+            cv2.imwrite(photo_path, frame)
+        except: pass
+
+    file_exists = os.path.exists(log_filename)
+    with open(log_filename, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Timestamp", "Name", "Student ID", "Test Name", "Status", "Photo Path"])
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        writer.writerow([timestamp, name, student_id, test_name, status, photo_path])
+        print(f" [ADMIN] Logged: {status} for {name}")
+
+# --- DATABASE ---
+def load_student_data():
+    global known_face_encodings, known_face_names
+    print(" [DB] Loading Student Faces...")
+    
+    known_face_encodings = []
+    known_face_names = []
+    
+    path = "student_pics"
+    if not os.path.exists(path):
+        os.makedirs(path)
+        return
+
+    for file in os.listdir(path):
+        if file.endswith((".jpg", ".png", ".jpeg")):
+            try:
+                img = face_recognition.load_image_file(f"{path}/{file}")
+                encoding = face_recognition.face_encodings(img)
+                if len(encoding) > 0:
+                    known_face_encodings.append(encoding[0])
+                    name = os.path.splitext(file)[0]
+                    known_face_names.append(name)
+                    print(f"   + Loaded: {name}")
+            except Exception as e:
+                print(f"   ! Error loading {file}: {e}")
+    
+    print(f" [DB] System Ready. Total: {len(known_face_names)}")
+
+def get_student_info(name):
+    try:
+        with open('students.json', 'r') as f:
+            db = json.load(f)
+        return db.get(name) 
+    except:
+        return None
+
+# --- AUDIO FUNCTIONS ---
+def update_status(status):
+    global current_status
+    current_status = status
+
+def speak(text):
+    global current_status
+    print(f"Robot: {text}")
+    prev_status = current_status
+    update_status(f"SPEAKING: {text}")
+    
+    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
+    file_path = f"audio_cache/{filename}"
+    
+    if not os.path.exists("audio_cache"): os.makedirs("audio_cache")
+
+    if not os.path.exists(file_path):
+        try:
+            padded_text = ". . . " + text
+            tts = gTTS(text=padded_text, lang='en', tld='co.uk')
+            tts.save(file_path)
+        except:
+            update_status(prev_status)
+            return
+
+    time.sleep(0.1)
+    os.system(f"mpg123 -q {file_path}")
+    update_status(prev_status)
+
+def listen(prompt_text=None):
+    if prompt_text: speak(prompt_text)
+    update_status("LISTENING")
+    r = sr.Recognizer()
+    
+    with no_alsa_errors():
+        try:
+            mic = sr.Microphone(device_index=MIC_INDEX)
+            with mic as source:
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                audio = r.listen(source, timeout=5, phrase_time_limit=5)
+                update_status("THINKING")
+                return r.recognize_google(audio).lower()
+        except:
+            return None
+        finally:
+            update_status("IDLE")
+
+def clean_id(text):
+    if not text: return ""
+    return re.sub(r'[\s-]', '', text).lower()
+
+# --- FLASK ROUTES ---
+@app.route('/')
+def index(): return render_template('index.html')
+
+@app.route('/video_feed')
+def video_feed(): return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/status_feed')
+def status_feed():
+    def generate():
+        while True:
+            yield f"data: {current_status}\n\n"
+            time.sleep(0.5)
+    return Response(generate(), mimetype="text/event-stream")
+
+def generate_frames():
+    global video_frame
+    while True:
+        if video_frame is not None:
+            ret, buffer = cv2.imencode('.jpg', video_frame)
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        time.sleep(0.04)
+
+# --- LOGIC LOOP (THE PROCTOR) ---
+def exam_logic_loop():
+    global current_detected_name, video_frame
+    
+    time.sleep(3) 
+    speak("Examination Proctor System Online.")
+    
+    while True:
+        update_status("WAITING FOR STUDENT")
+        
+        # 1. Wait for a face
+        if current_detected_name is None:
+            if int(time.time()) % 15 == 0:
+                speak("Please step forward for identification.")
+            time.sleep(1)
+            continue
+            
+        # 2. Face Detected
+        name = current_detected_name
+        update_status(f"IDENTIFYING: {name}")
+        
+        # --- SECURITY: UNKNOWN FACE ---
+        if name == "Unknown":
+            speak("Face not recognized.")
+            time.sleep(0.5)
+            speak("Access Denied. Your face does not match our records.")
+            
+            log_attendance("Unknown", "N/A", "N/A", "DENIED_FACE_MISMATCH", video_frame)
+            
+            speak("Please step aside.")
+            while current_detected_name is not None: time.sleep(1)
+            continue 
+            
+        # 3. Known Face
+        speak(f"Biometric match found. Hello {name}.")
+        
+        student_data = get_student_info(name)
+        if not student_data:
+            speak(f"Error. Student {name} has no registration data file.")
+            log_attendance(name, "Unknown", "N/A", "DENIED_NO_DATA", video_frame)
+            while current_detected_name is not None: time.sleep(1)
+            continue
+
+        # 4. Voice ID Check
+        correct_id = student_data['id'].lower()
+        spoken_id = listen("To confirm your identity, please state your Student I D.")
+        
+        if spoken_id and clean_id(spoken_id) == clean_id(correct_id):
+            speak("Identity confirmed.")
+        else:
+            speak(f"Authentication Failed. Access Denied.")
+            log_attendance(name, student_data['id'], "N/A", "DENIED_WRONG_VOICE_ID", video_frame)
+            while current_detected_name is not None: time.sleep(1)
+            continue
+
+        # 5. Ask for Test
+        test_name = listen("What test are you writing today?")
+        if not test_name: test_name = "Not Stated"
+        speak(f"Logging entry for {test_name}.")
+        
+        # 6. Check Registration Status
+        if student_data['registered']:
+            speak("Registration Verified. Listen strictly to the rules.")
+            time.sleep(0.3)
+            speak("1. No electronic devices. Phones, watches, and glasses must be removed.")
+            time.sleep(0.3)
+            speak("2. Keep your eyes on your own paper.")
+            time.sleep(0.5)
+            speak("You may enter. Good luck.")
+            
+            log_attendance(name, student_data['id'], test_name, "ALLOWED_ENTRY", video_frame)
+            
+            while current_detected_name is not None: time.sleep(1)
+            speak("Next student.")
+        else:
+            speak(f"Alert. {name}, you are NOT registered for this exam.")
+            log_attendance(name, student_data['id'], test_name, "DENIED_NOT_REGISTERED", video_frame)
+            speak("Please leave the area immediately.")
+            while current_detected_name is not None: time.sleep(1)
+
+def vision_loop():
+    global video_frame, current_detected_name
+    print(" [VISION] Starting Camera...")
+    
+    # GStreamer pipeline for Pi 5 / Libcamera
+    pipeline = "libcamerasrc ! video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink"
+    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+    if not cap.isOpened(): return
+
+    frame_count = 0
+    cached_names = []
+    cached_locs = []
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: time.sleep(0.1); continue
+        
+        frame_count += 1
+        if frame_count % 5 == 0: 
+            small = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            cached_locs = face_recognition.face_locations(rgb)
+            encodings = face_recognition.face_encodings(rgb, cached_locs)
+            
+            cached_names = []
+            detected = None
+            if len(known_face_encodings) > 0:
+                for enc in encodings:
+                    matches = face_recognition.compare_faces(known_face_encodings, enc)
+                    name = "Unknown"
+                    dists = face_recognition.face_distance(known_face_encodings, enc)
+                    if len(dists) > 0:
+                        if matches[np.argmin(dists)]: name = known_face_names[np.argmin(dists)]
+                    cached_names.append(name)
+                    detected = name
+            else:
+                cached_names = ["Unknown"] * len(encodings)
+                if len(encodings) > 0: detected = "Unknown"
+
+            current_detected_name = detected
+
+        for (t, r, b, l), name in zip(cached_locs, cached_names):
+            t*=4; r*=4; b*=4; l*=4
+            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            cv2.rectangle(frame, (l, t), (r, b), color, 2)
+            cv2.putText(frame, name, (l, b+20), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255,255,255), 1)
+        video_frame = frame
+
+if __name__ == "__main__":
+    load_student_data()
+    threading.Thread(target=vision_loop, daemon=True).start()
+    threading.Thread(target=exam_logic_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000, debug=False)
