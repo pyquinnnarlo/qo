@@ -1,15 +1,71 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python main.py 
- [DB] Loading Student Faces...
-   + Loaded: john_doe
- [DB] System Ready. Known students: 1
- [VISION] Starting Camera...
- * Serving Flask app 'main'
- * Debug mode: off
-[ WARN:0@6.772] global cap_gstreamer.cpp:2839 handleMessage OpenCV | GStreamer warning: Embedded video playback halted; module v4l2src0 reported: Failed to allocate required memory.
-[ WARN:0@6.772] global cap_gstreamer.cpp:1698 open OpenCV | GStreamer warning: unable to start pipeline
-[ WARN:0@6.772] global cap_gstreamer.cpp:1173 isPipelinePlaying OpenCV | GStreamer warning: GStreamer: pipeline have not been created
-Robot: System Online.
-Robot: Please look at the camera to scan your face.
-Robot: Please look at the camera to scan your face.
-Robot: Please look at the camera to scan your face.
-Robot: Please look at the camera to scan your face.
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name
+    
+    print(" [VISION] Attempting to start camera via GStreamer...")
+
+    # --- OPTION 1: Raspberry Pi Camera Module (CSI) ---
+    # This pipeline is specific for Pi 5 / Bookworm OS
+    pipeline = (
+        "libcamerasrc ! "
+        "video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! "
+        "videoconvert ! "
+        "video/x-raw, format=BGR ! appsink"
+    )
+    
+    # Open the camera using the GStreamer backend
+    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    
+    # --- OPTION 2: If using a USB WebCam, uncomment the line below instead ---
+    # cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        print(" [ERROR] Failed to open camera! Ensure 'gstreamer1.0-libcamera' is installed.")
+        return
+
+    print(" [VISION] Camera started successfully.")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: 
+            print(" [ERROR] Camera is open but failed to read a frame.")
+            time.sleep(1)
+            continue
+        
+        # Resize for speed (1/4 size)
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        
+        face_locations = face_recognition.face_locations(rgb_small_frame)
+        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+        
+        detected_name = None # Default to None if no face
+
+        if face_encodings:
+            for face_encoding in face_encodings:
+                matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+                name = "Unknown"
+
+                face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                if len(face_distances) > 0:
+                    best_match_index = np.argmin(face_distances)
+                    if matches[best_match_index]:
+                        name = known_face_names[best_match_index]
+                
+                detected_name = name
+        
+        # Update global variable for the logic loop
+        current_detected_name = detected_name 
+        
+        # Draw GUI (Boxes and Names)
+        for (top, right, bottom, left), name in zip(face_locations, [detected_name]*len(face_locations)):
+            # Scale coordinates back up (x4)
+            top *= 4; right *= 4; bottom *= 4; left *= 4
+            
+            # Color: Green if recognized, Red if Unknown
+            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            
+            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+            cv2.putText(frame, str(name), (left, bottom + 20), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+        video_frame = frame
