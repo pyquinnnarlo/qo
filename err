@@ -195,3 +195,176 @@ def video_feed():
 @app.route('/status_feed')
 def status_feed():
     def generate():
+        while True:
+            yield f"data: {current_status}\n\n"
+            time.sleep(0.5)
+    return Response(generate(), mimetype="text/event-stream")
+
+# --- LOGIC LOOP ---
+def exam_logic_loop():
+    global current_detected_name
+    
+    time.sleep(3) 
+    speak("System Online.")
+    
+    while True:
+        update_status("WAITING FOR FACE")
+        
+        # 1. Wait until a face is detected
+        if current_detected_name is None:
+            time.sleep(0.5)
+            continue
+            
+        # 2. Face Detected -> Greet and Instruct
+        update_status("INSTRUCTING STUDENT")
+        speak("Hi, Please look directly at the camera. Please remove any things from your face or head for proper detection.")
+        
+        # 3. Wait 3 seconds for them to comply
+        time.sleep(3)
+        
+        # 4. Check if student is still there
+        if current_detected_name is None:
+            speak("Face lost. Process reset.")
+            continue
+            
+        # 5. Process Face
+        name = current_detected_name
+        update_status(f"PROCESSING: {name}")
+        
+        if name == "Unknown":
+            spoken_name = listen_for_name()
+            if spoken_name:
+                speak(f"I heard {spoken_name}.")
+                name = spoken_name.replace(" ", "_")
+            else:
+                current_detected_name = None
+                continue
+        
+        # 6. Validation (UPDATED)
+        is_registered, display_name = check_registration(name)
+        
+        if is_registered is True:
+            # Use display_name (Mark Moore) instead of name (Mark_Moore)
+            speak(f"Hello {display_name}.")
+            time.sleep(0.2)
+            speak("You are registered.")
+            
+            # --- RULES ANNOUNCEMENT ---
+            update_status("READING RULES")
+            speak("Attention. Please listen to the exam rules.")
+            time.sleep(0.2)
+            speak("No phones or smart watches are allowed in the exam hall or during the exam.")
+            time.sleep(0.2)
+            speak("Failure to follow these rules will result in the dismissal of the test.")
+            time.sleep(0.2)
+            
+            speak("You may enter now.")
+            
+            # Wait for them to leave
+            while current_detected_name is not None: 
+                time.sleep(1)
+            speak("Next student.")
+            
+        elif is_registered is False:
+            speak(f"Alert. {display_name}, you are NOT registered.")
+            while current_detected_name is not None: 
+                time.sleep(1)
+                
+        elif is_registered is None:
+            if name != "Unknown":
+                speak(f"I cannot find registration for {display_name}.")
+                time.sleep(2)
+        
+        time.sleep(1) 
+
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name
+    
+    print(" [VISION] Starting Camera...")
+    
+    # Standard Pi Camera Pipeline
+    pipelines = [
+        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
+        0
+    ]
+    
+    cap = None
+    for pipeline in pipelines:
+        if isinstance(pipeline, str):
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        else:
+            cap = cv2.VideoCapture(pipeline)
+            
+        if cap.isOpened():
+            print(f" [VISION] Camera opened with: {pipeline}")
+            break
+            
+    if not cap or not cap.isOpened():
+        print(" [ERROR] Could not open any camera.")
+        return
+
+    frame_count = 0
+    cached_face_locations = []
+    cached_face_names = []
+
+    while True:
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
+            
+            frame_count += 1
+            
+            # Only detect faces every 5th frame
+            if frame_count % 5 == 0:
+                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                
+                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+                
+                cached_face_names = []
+                detected_name = None
+
+                if face_encodings:
+                    for face_encoding in face_encodings:
+                        name = "Unknown"
+                        if len(known_face_encodings) > 0:
+                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                            
+                            if len(face_distances) > 0:
+                                best_match_index = np.argmin(face_distances)
+                                if matches[best_match_index]:
+                                    name = known_face_names[best_match_index]
+                        
+                        cached_face_names.append(name)
+                        detected_name = name
+                
+                current_detected_name = detected_name
+
+            # Draw rectangles
+            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
+                top *= 4; right *= 4; bottom *= 4; left *= 4
+                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                cv2.putText(frame, str(name), (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+            video_frame = frame
+            
+        except Exception as e:
+            print(f" [VISION WARNING] {e}")
+            time.sleep(0.1)
+
+if __name__ == "__main__":
+    load_student_data()
+    
+    t_vis = threading.Thread(target=vision_loop, daemon=True)
+    t_vis.start()
+    
+    t_log = threading.Thread(target=exam_logic_loop, daemon=True)
+    t_log.start()
+
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
