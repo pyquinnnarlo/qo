@@ -136,7 +136,6 @@ def listen_for_name():
                 audio = r.listen(source, timeout=4, phrase_time_limit=4)
                 
                 update_status("THINKING")
-                # Using Sphinx for offline capability (or change to google if online)
                 name = r.recognize_sphinx(audio).lower()
                 print(f" [AUDIO] Heard: {name}")
                 return name
@@ -180,7 +179,7 @@ def status_feed():
             time.sleep(0.5)
     return Response(generate(), mimetype="text/event-stream")
 
-# --- LOGIC LOOP (MODIFIED SECTION) ---
+# --- LOGIC LOOP (UPDATED) ---
 def exam_logic_loop():
     global current_detected_name
     
@@ -195,19 +194,19 @@ def exam_logic_loop():
             time.sleep(0.5)
             continue
             
-        # 2. Face Detected -> Greet and Instruct (NEW)
+        # 2. Face Detected -> Greet and Instruct
         update_status("INSTRUCTING STUDENT")
         speak("Hi, Please look directly at the camera. Please remove any things from your face or head for proper detection.")
         
-        # 3. Wait 3 seconds for them to comply (remove hat/glasses)
+        # 3. Wait 3 seconds for them to comply
         time.sleep(3)
         
-        # 4. Check if student is still there after instructions
+        # 4. Check if student is still there
         if current_detected_name is None:
-            speak("Face lost. process reset.")
+            speak("Face lost. Process reset.")
             continue
             
-        # 5. Process Face (Using the name detected AFTER the delay)
+        # 5. Process Face
         name = current_detected_name
         update_status(f"PROCESSING: {name}")
         
@@ -217,7 +216,6 @@ def exam_logic_loop():
                 speak(f"I heard {spoken_name}.")
                 name = spoken_name.replace(" ", "_")
             else:
-                # If recognition failed, go back to wait
                 current_detected_name = None
                 continue
         
@@ -227,7 +225,19 @@ def exam_logic_loop():
         if is_registered is True:
             speak(f"Hello {name}.")
             time.sleep(0.2)
-            speak("You are registered. You may enter.")
+            speak("You are registered.")
+            
+            # --- NEW: EXAM RULES ---
+            update_status("READING RULES")
+            speak("Attention. Please listen to the exam rules.")
+            time.sleep(0.4)
+            speak("No phones or smart watches are allowed in the exam hall or during the exam.")
+            time.sleep(0.4)
+            # I corrected 'failuer' to 'failure' and 'dismal' to 'dismissal' so the robot speaks clearly
+            speak("Failure to follow these rules will result in the dismissal of the test.")
+            time.sleep(0.2)
+            
+            speak("You may enter now.")
             
             # Wait for them to leave
             while current_detected_name == name: time.sleep(1)
@@ -283,7 +293,6 @@ def vision_loop():
         
         frame_count += 1
         
-        # --- OPTIMIZATION: Only detect faces every 5th frame ---
         if frame_count % 5 == 0:
             small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
