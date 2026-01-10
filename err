@@ -1,8 +1,297 @@
-{
-    "Mark_Moore": {
-        "full_name": "Mark Moore",
-        "student_id": "5555",
-        "registered": true,
-        "timestamp": 1768046668.5811718
-    }
-}
+import threading
+import cv2
+import os
+import time
+import json
+import face_recognition
+import numpy as np
+import logging
+import hashlib
+import subprocess
+from flask import Flask, render_template, Response, request, jsonify
+from gtts import gTTS
+
+# --- CONFIGURATION ---
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+# Global Variables
+video_frame = None
+frame_lock = threading.Lock() # Fixes Segfaults
+
+known_face_encodings = []
+known_face_names = []
+current_detected_name = None  
+current_status = "SYSTEM READY"
+
+# Thread Communication
+manual_verify_id = None
+scan_active = True 
+
+# --- LOAD DATABASE ---
+def load_student_data():
+    print(" [DB] Loading Student Database...")
+    global known_face_encodings, known_face_names
+    
+    known_face_encodings = []
+    known_face_names = []
+
+    # Load Images
+    path = "student_pics"
+    if os.path.exists(path):
+        for file in os.listdir(path):
+            if file.endswith((".jpg", ".png")):
+                try:
+                    img = face_recognition.load_image_file(f"{path}/{file}")
+                    encs = face_recognition.face_encodings(img)
+                    if encs:
+                        known_face_encodings.append(encs[0])
+                        # Store name exactly as filename (e.g., "Mark_Moore")
+                        name = os.path.splitext(file)[0]
+                        known_face_names.append(name)
+                        print(f"   + Loaded Face: {name}")
+                except: pass
+    
+    print(f" [DB] Loaded {len(known_face_names)} faces.")
+
+def check_registration_status(identifier, method="name"):
+    """
+    Checks students.json for registration.
+    method="name": identifier is 'Mark_Moore'
+    method="id": identifier is '5555'
+    """
+    try:
+        if not os.path.exists('students.json'): return False, "No Database"
+        
+        with open('students.json', 'r') as f:
+            db = json.load(f)
+            
+        if method == "name":
+            student = db.get(identifier)
+            if student and student.get('registered'):
+                return True, student.get('full_name')
+        
+        elif method == "id":
+            # Search all entries for matching ID
+            for key, val in db.items():
+                if val.get('student_id') == identifier and val.get('registered'):
+                    return True, val.get('full_name')
+                    
+        return False, None
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return False, None
+
+# --- AUDIO ---
+def speak(text):
+    global current_status
+    print(f"Robot: {text}")
+    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
+    file_path = f"audio_cache/{filename}"
+    
+    if not os.path.exists("audio_cache"): os.makedirs("audio_cache")
+    if not os.path.exists(file_path):
+        try:
+            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts.save(file_path)
+        except: return
+
+    try:
+        subprocess.run(["mpg123", "-q", file_path], timeout=5)
+    except: pass
+
+def update_status(status):
+    global current_status
+    current_status = status
+
+# --- FLASK ---
+@app.route('/')
+def index(): return render_template('index.html')
+
+@app.route('/video_feed')
+def video_feed():
+    def generate():
+        while True:
+            with frame_lock:
+                if video_frame is not None:
+                    ret, buf = cv2.imencode('.jpg', video_frame)
+                    frame_bytes = buf.tobytes() if ret else None
+                else: frame_bytes = None
+            
+            if frame_bytes:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            time.sleep(0.05)
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/status_feed')
+def status_feed():
+    def generate():
+        while True:
+            yield f"data: {current_status}\n\n"
+            time.sleep(0.2)
+    return Response(generate(), mimetype="text/event-stream")
+
+@app.route('/verify_manual', methods=['POST'])
+def verify_manual():
+    global manual_verify_id
+    data = request.json
+    if data.get('id'):
+        manual_verify_id = data.get('id')
+        return jsonify({"status": "received"}), 200
+    return jsonify({"status": "error"}), 400
+
+# --- LOGIC LOOP ---
+def exam_logic_loop():
+    global current_detected_name, manual_verify_id, scan_active
+    
+    time.sleep(2)
+    speak("Exam Security System Online.")
+
+    while True:
+        update_status("SCANNING FOR FACES")
+        scan_active = True
+        
+        # 1. Wait for Face
+        if current_detected_name is None:
+            time.sleep(0.5)
+            continue
+
+        detected = current_detected_name
+        
+        # 2. FACE RECOGNIZED -> CHECK DB
+        if detected != "Unknown":
+            update_status(f"VERIFYING: {detected}")
+            speak(f"Face detected. Verifying {detected.replace('_', ' ')}.")
+            
+            is_valid, full_name = check_registration_status(detected, method="name")
+            
+            if is_valid:
+                update_status("ACCESS GRANTED")
+                speak(f"Identity confirmed. Welcome {full_name}.")
+                speak("You are authorized to enter.")
+                time.sleep(1)
+                speak("Please proceed immediately.")
+            else:
+                update_status("ACCESS DENIED")
+                speak(f"Alert. {detected}, your registration is not active.")
+                speak("You cannot enter.")
+            
+            # Wait for them to leave
+            while current_detected_name is not None: time.sleep(1)
+            continue
+
+        # 3. FACE UNKNOWN -> MANUAL FALLBACK
+        if detected == "Unknown":
+            update_status("FACE NOT RECOGNIZED")
+            speak("I do not recognize you.")
+            time.sleep(0.5)
+            
+            # Pause scanning to save resources for typing
+            scan_active = False 
+            time.sleep(0.5)
+            
+            speak("Please enter your Student ID on the screen.")
+            update_status("INPUT REQUIRED")
+            
+            timer = 0
+            while manual_verify_id is None:
+                time.sleep(0.5)
+                timer += 1
+                if timer > 60: break # 30s timeout
+            
+            if manual_verify_id:
+                sid = manual_verify_id
+                update_status(f"CHECKING ID: {sid}")
+                
+                is_valid, full_name = check_registration_status(sid, method="id")
+                
+                if is_valid:
+                    update_status("ACCESS GRANTED")
+                    speak(f"ID Verified. Welcome {full_name}.")
+                    speak("You may enter.")
+                else:
+                    update_status("ACCESS DENIED")
+                    speak("ID not found in database. Access denied.")
+                
+                manual_verify_id = None
+                
+                speak("Next student.")
+                scan_active = True
+                while current_detected_name is not None: time.sleep(1)
+            else:
+                update_status("TIMEOUT")
+                speak("Verification timed out.")
+                scan_active = True
+                time.sleep(2)
+
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name
+    
+    pipelines = [
+        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
+        0
+    ]
+    
+    cap = None
+    for pipeline in pipelines:
+        if isinstance(pipeline, str): cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        else: cap = cv2.VideoCapture(pipeline) 
+        if cap.isOpened(): break
+
+    frame_count = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.1)
+            continue
+            
+        frame_count += 1
+        
+        # Only process if active
+        if scan_active and frame_count % 5 == 0:
+            small = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            
+            locs = face_recognition.face_locations(rgb)
+            encs = face_recognition.face_encodings(rgb, locs)
+            
+            det_name = None
+
+            if locs:
+                enc = encs[0]
+                name = "Unknown"
+                if known_face_encodings:
+                    matches = face_recognition.compare_faces(known_face_encodings, enc, tolerance=0.5)
+                    dists = face_recognition.face_distance(known_face_encodings, enc)
+                    if len(dists) > 0:
+                        best = np.argmin(dists)
+                        if matches[best]: name = known_face_names[best]
+                
+                det_name = name
+
+            current_detected_name = det_name
+
+            # Draw
+            if locs:
+                top, right, bottom, left = locs[0]
+                # Scale up x4
+                top*=4; right*=4; bottom*=4; left*=4
+                color = (0, 255, 0) if det_name != "Unknown" else (0, 0, 255)
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                
+                label = det_name if det_name else "Scanning..."
+                cv2.putText(frame, label, (left, top-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+        # Thread-safe copy
+        final_frame = frame.copy()
+        with frame_lock:
+            video_frame = final_frame
+
+if __name__ == "__main__":
+    load_student_data()
+    threading.Thread(target=vision_loop, daemon=True).start()
+    threading.Thread(target=exam_logic_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
