@@ -1,19 +1,399 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python main.py 
- [DB] Loading Student Faces...
-   - Warning: No face found in Mark_Moore.jpg
- [DB] System Ready. Known students: 0
- [VISION] Starting Camera...
- * Serving Flask app 'main'
- * Debug mode: off
-[2:47:22.633460981] [15576]  INFO Camera camera_manager.cpp:340 libcamera v0.6.0+rpt20251202
-[2:47:22.643049712] [15581]  INFO RPI pisp.cpp:720 libpisp version 1.3.0
-[2:47:22.646180862] [15581]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/pisp/ov5647.json
-[2:47:22.653000838] [15581]  INFO Camera camera_manager.cpp:223 Adding camera '/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36' for pipeline handler rpi/pisp
-[2:47:22.653036506] [15581]  INFO RPI pisp.cpp:1181 Registered camera /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 to CFE device /dev/media2 and ISP device /dev/media0 using PiSP variant BCM2712_D0
-[2:47:22.656200619] [15584]  INFO Camera camera.cpp:1215 configuring streams: (0) 640x480-YUYV/Rec709
-[2:47:22.656480754] [15581]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 - Selected sensor format: 640x480-SGBRG10_1X10/RAW - Selected CFE format: 640x480-PC1g/RAW
-[ WARN:0@2.350] global cap_gstreamer.cpp:1754 open OpenCV | GStreamer warning: unable to query duration of stream
-[ WARN:0@2.350] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
- [VISION] Camera opened with: libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false
-Robot: System Online.
+import threading
+import cv2
+import speech_recognition as sr
+import os
+import time
+import json
+import face_recognition
+import numpy as np
+import logging
+import hashlib
+import subprocess
+from flask import Flask, render_template, Response
+from gtts import gTTS
+from ctypes import *
+from contextlib import contextmanager
 
+# --- ALSA ERROR SUPPRESSION (For Linux/Pi Audio) ---
+ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+
+c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+
+@contextmanager
+def no_alsa_errors():
+    try:
+        asound = cdll.LoadLibrary('libasound.so')
+        asound.snd_lib_error_set_handler(c_error_handler)
+        yield
+        asound.snd_lib_error_set_handler(None)
+    except:
+        yield
+
+# --- CONFIGURATION ---
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+MIC_INDEX = None  # Set this to an integer (e.g., 0, 1) if you have multiple mics
+
+# --- GLOBAL VARIABLES ---
+video_frame = None
+known_face_encodings = []
+known_face_names = []
+current_detected_name = None
+current_status = "SYSTEM READY"
+
+# --- STEP 1: LOAD DATABASE ---
+def load_student_data():
+    """Loads student images and encodes faces."""
+    print(" [DB] Loading Student Faces...")
+    global known_face_encodings, known_face_names
+
+    path = "student_pics"
+    if not os.path.exists(path):
+        os.makedirs(path)
+        print(" [DB] 'student_pics' folder created. Add images there.")
+        return
+
+    # Clear existing data to prevent duplicates on reload
+    known_face_encodings = []
+    known_face_names = []
+
+    for file in os.listdir(path):
+        if file.endswith((".jpg", ".png", ".jpeg")):
+            try:
+                img_path = os.path.join(path, file)
+                img = face_recognition.load_image_file(img_path)
+                encodings = face_recognition.face_encodings(img)
+                
+                if len(encodings) > 0:
+                    known_face_encodings.append(encodings[0])
+                    # Extract name from filename (e.g. "Mark_Moore.jpg" -> "Mark_Moore")
+                    name = os.path.splitext(file)[0]
+                    known_face_names.append(name)
+                    print(f"   + Loaded: {name}")
+                else:
+                    print(f"   - Warning: No face found in {file}")
+            except Exception as e:
+                print(f"   - Error loading {file}: {e}")
+
+    print(f" [DB] System Ready. Known students: {len(known_face_names)}")
+
+def check_registration(name):
+    """Checks the JSON file for the student's status."""
+    try:
+        if not os.path.exists('students.json'):
+            # Create a dummy file if it doesn't exist
+            with open('students.json', 'w') as f:
+                json.dump({}, f)
+            return None
+
+        with open('students.json', 'r') as f:
+            db = json.load(f)
+        
+        # Look for the name (key) in the database
+        student = db.get(name)
+        
+        if student:
+            # Return the boolean value of 'registered'
+            return student.get('registered', False)
+        else:
+            # Student not found in JSON
+            return None
+            
+    except Exception as e:
+        print(f" [DB ERROR] {e}")
+        return None
+
+# --- AUDIO FUNCTIONS ---
+def update_status(status):
+    global current_status
+    current_status = status
+    print(f" [STATUS] {status}")
+
+def speak(text):
+    global current_status
+    
+    # Save previous status to restore later
+    prev_status = current_status
+    update_status(f"SPEAKING: {text}")
+
+    # Create cache folder
+    if not os.path.exists("audio_cache"):
+        os.makedirs("audio_cache")
+
+    # Generate filename based on text hash
+    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
+    file_path = f"audio_cache/{filename}"
+
+    # Generate MP3 if it doesn't exist
+    if not os.path.exists(file_path):
+        try:
+            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts.save(file_path)
+        except Exception as e:
+            print(f" [ERROR] Could not generate TTS: {e}")
+            update_status(prev_status)
+            return
+
+    # Play audio using mpg123
+    try:
+        subprocess.run(["mpg123", "-q", file_path], check=False)
+    except FileNotFoundError:
+        print(" [ERROR] mpg123 not installed. Run: sudo apt install mpg123")
+
+    update_status(prev_status)
+
+def listen_for_name():
+    """Asks for name with error handling."""
+    update_status("LISTENING")
+    speak("Face not recognized. Please state your name.")
+
+    r = sr.Recognizer()
+
+    with no_alsa_errors():
+        try:
+            mic = sr.Microphone(device_index=MIC_INDEX)
+            with mic as source:
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                print(" [AUDIO] Listening...")
+                # Listen for up to 4 seconds
+                audio = r.listen(source, timeout=4, phrase_time_limit=4)
+                
+                update_status("THINKING")
+                # Using Sphinx (offline) - ensure pocketsphinx is installed
+                # Or switch to r.recognize_google(audio) if you have internet
+                name = r.recognize_sphinx(audio).lower()
+                print(f" [AUDIO] Heard: {name}")
+                return name
+        except sr.WaitTimeoutError:
+            print(" [AUDIO] Timeout.")
+            return None
+        except sr.UnknownValueError:
+            speak("I did not understand.")
+            return None
+        except Exception as e:
+            print(f" [AUDIO] Error: {e}")
+            return None
+        finally:
+            update_status("IDLE")
+
+# --- WEB SERVER ---
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+def generate_frames():
+    global video_frame
+    while True:
+        if video_frame is not None:
+            try:
+                ret, buffer = cv2.imencode('.jpg', video_frame)
+                frame_bytes = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            except Exception as e:
+                pass
+        time.sleep(0.04)
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/status_feed')
+def status_feed():
+    def generate():
+        while True:
+            yield f"data: {current_status}\n\n"
+            time.sleep(0.5)
+    return Response(generate(), mimetype="text/event-stream")
+
+# --- LOGIC LOOP ---
+def exam_logic_loop():
+    global current_detected_name
+    
+    # Allow system to boot up
+    time.sleep(3) 
+    speak("System Online.")
+
+    while True:
+        update_status("WAITING FOR FACE")
+        
+        # 1. Wait until a face is detected
+        if current_detected_name is None:
+            time.sleep(0.5)
+            continue
+            
+        # 2. Face Detected -> Greet and Instruct
+        update_status("INSTRUCTING STUDENT")
+        speak("Hi, Please look directly at the camera. Please remove any things from your face or head for proper detection.")
+        
+        # 3. Wait 3 seconds for them to comply
+        time.sleep(3)
+        
+        # 4. Check if student is still there
+        if current_detected_name is None:
+            speak("Face lost. Process reset.")
+            continue
+            
+        # 5. Process Face
+        name = current_detected_name
+        update_status(f"PROCESSING: {name}")
+        
+        if name == "Unknown":
+            spoken_name = listen_for_name()
+            if spoken_name:
+                speak(f"I heard {spoken_name}.")
+                # Simple logic to convert spoken "mark moore" to "Mark_Moore" format if needed
+                # This is a rough approximation
+                name = spoken_name.replace(" ", "_").title() 
+            else:
+                current_detected_name = None
+                continue
+        
+        # 6. Validation
+        is_registered = check_registration(name)
+        
+        if is_registered is True:
+            speak(f"Hello {name}.")
+            time.sleep(0.2)
+            speak("You are registered.")
+            
+            # --- RULES ANNOUNCEMENT ---
+            update_status("READING RULES")
+            speak("Attention. Please listen to the exam rules.")
+            time.sleep(0.2)
+            speak("No phones or smart watches are allowed in the exam hall or during the exam.")
+            time.sleep(0.2)
+            speak("Failure to follow these rules will result in the dismissal of the test.")
+            time.sleep(0.2)
+            
+            speak("You may enter now.")
+            
+            # Wait for them to leave (simple logic: wait until face is gone)
+            while current_detected_name == name: 
+                time.sleep(1)
+            speak("Next student.")
+            
+        elif is_registered is False:
+            speak(f"Alert. {name}, you are NOT registered.")
+            # Block until they leave
+            while current_detected_name == name: 
+                time.sleep(1)
+                
+        elif is_registered is None:
+            if name != "Unknown":
+                speak(f"I cannot find registration details for {name}.")
+                time.sleep(2)
+        
+        # Small buffer before restarting loop
+        time.sleep(1)
+
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name
+    print(" [VISION] Starting Camera...")
+
+    # GStreamer pipeline for RPi (libcamerasrc) or Fallback to standard webcam (0)
+    pipelines = [
+        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
+        0
+    ]
+
+    cap = None
+    for pipeline in pipelines:
+        try:
+            if isinstance(pipeline, str):
+                cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            else:
+                cap = cv2.VideoCapture(pipeline)
+            
+            if cap.isOpened():
+                print(f" [VISION] Camera opened with: {pipeline}")
+                break
+        except Exception as e:
+            print(f" [VISION] Failed to open {pipeline}: {e}")
+            
+    if not cap or not cap.isOpened():
+        print(" [ERROR] Could not open any camera.")
+        return
+
+    frame_count = 0
+    cached_face_locations = []
+    cached_face_names = []
+
+    while True:
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
+            
+            frame_count += 1
+            
+            # Only detect faces every 5th frame to save CPU
+            if frame_count % 5 == 0:
+                # Resize for faster processing
+                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                
+                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+                
+                cached_face_names = []
+                detected_name = None
+
+                if face_encodings:
+                    for face_encoding in face_encodings:
+                        name = "Unknown"
+                        if len(known_face_encodings) > 0:
+                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                            
+                            if len(face_distances) > 0:
+                                best_match_index = np.argmin(face_distances)
+                                if matches[best_match_index]:
+                                    name = known_face_names[best_match_index]
+                        
+                        cached_face_names.append(name)
+                        detected_name = name
+                
+                # Update global variable safely
+                current_detected_name = detected_name
+
+            # Draw rectangles on the frame
+            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
+                # Scale back up x4
+                top *= 4; right *= 4; bottom *= 4; left *= 4
+                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+                cv2.putText(frame, str(name), (left + 6, bottom - 6), 
+                            cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+            video_frame = frame
+            
+        except Exception as e:
+            print(f" [VISION WARNING] {e}")
+            time.sleep(0.1)
+
+# --- MAIN ---
+if __name__ == "__main__":
+    # 1. Load Data
+    load_student_data()
+
+    # 2. Start Vision Thread
+    t_vis = threading.Thread(target=vision_loop, daemon=True)
+    t_vis.start()
+
+    # 3. Start Logic Thread
+    t_log = threading.Thread(target=exam_logic_loop, daemon=True)
+    t_log.start()
+
+    # 4. Run Web Server
+    # use_reloader=False is important when using threads
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
