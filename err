@@ -1,372 +1,190 @@
-import threading
-import cv2
-import speech_recognition as sr
-import os
-import time
-import json
-import face_recognition
-import numpy as np
-import logging
-import hashlib
-import subprocess
-from flask import Flask, render_template, Response
-from gtts import gTTS
-from ctypes import *
-from contextlib import contextmanager
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registration Kiosk</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
 
-# --- ALSA ERROR SUPPRESSION (Kept from original) ---
-ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
-def py_error_handler(filename, line, function, err, fmt):
-    pass
-c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+        /* --- FACE CONTAINER --- */
+        .face {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 50px;
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
 
-@contextmanager
-def no_alsa_errors():
-    try:
-        asound = cdll.LoadLibrary('libasound.so')
-        asound.snd_lib_error_set_handler(c_error_handler)
-        yield
-        asound.snd_lib_error_set_handler(None)
-    except:
-        yield
+        .eyes-row { display: flex; gap: 80px; }
+        .eye {
+            width: 100px;
+            height: 120px;
+            background: #00e5ff;
+            border-radius: 40%;
+            box-shadow: 0 0 20px #00e5ff;
+            transition: all 0.2s;
+        }
 
-# --- CONFIGURATION ---
-app = Flask(__name__)
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+        .mouth {
+            width: 150px;
+            height: 10px;
+            background: #00e5ff;
+            border-radius: 10px;
+            box-shadow: 0 0 10px #00e5ff;
+            transition: all 0.1s;
+        }
 
-MIC_INDEX = None # Set this if you have multiple microphones (0, 1, etc)
+        /* STATES */
+        .waiting-input .eye { background: #ff00ff; height: 100px; box-shadow: 0 0 40px #ff00ff; }
+        .waiting-input .mouth { background: #ff00ff; width: 40px; height: 40px; border-radius: 50%; }
 
-# Global Variables
-video_frame = None
-known_face_encodings = []
-known_face_names = []
-current_detected_name = None  
-current_status = "SYSTEM READY"
+        .success .eye { background: #00ff00; }
+        .success .mouth { background: #00ff00; width: 180px; height: 20px; border-radius: 0 0 100px 100px; }
 
-# --- STEP 1: LOAD DATABASE ---
-def load_student_data():
-    print(" [DB] Loading Student Faces...")
-    global known_face_encodings, known_face_names
-    
-    # Clear existing to prevent duplicates on reload
-    known_face_encodings = []
-    known_face_names = []
-
-    path = "student_pics"
-    if not os.path.exists(path):
-        os.makedirs(path)
-        print(" [DB] 'student_pics' folder created.")
-        return
-
-    for file in os.listdir(path):
-        if file.endswith((".jpg", ".png", ".jpeg")):
-            try:
-                img = face_recognition.load_image_file(f"{path}/{file}")
-                encodings = face_recognition.face_encodings(img)
-                
-                if len(encodings) > 0:
-                    known_face_encodings.append(encodings[0])
-                    name = os.path.splitext(file)[0].replace("_", " ") # Convert filename back to name
-                    known_face_names.append(name)
-                    print(f"   + Loaded: {name}")
-            except Exception as e:
-                print(f"   - Error loading {file}: {e}")
-    
-    print(f" [DB] System Ready. Known students: {len(known_face_names)}")
-
-# --- AUDIO FUNCTIONS ---
-def update_status(status):
-    global current_status
-    current_status = status
-
-def speak(text):
-    global current_status
-    print(f"Robot: {text}")
-    
-    prev_status = current_status
-    update_status(f"SPEAKING: {text}")
-    
-    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
-    file_path = f"audio_cache/{filename}"
-    
-    if not os.path.exists("audio_cache"):
-        os.makedirs("audio_cache")
-
-    if not os.path.exists(file_path):
-        try:
-            tts = gTTS(text=text, lang='en', tld='co.uk')
-            tts.save(file_path)
-        except Exception as e:
-            print(f" [ERROR] Could not generate TTS: {e}")
-            update_status(prev_status)
-            return
-
-    subprocess.run(["mpg123", "-q", file_path])
-    update_status(prev_status)
-
-def listen_for_name():
-    """Asks for name with error handling"""
-    update_status("LISTENING")
-    
-    r = sr.Recognizer()
-    
-    with no_alsa_errors():
-        try:
-            mic = sr.Microphone(device_index=MIC_INDEX)
-            with mic as source:
-                r.adjust_for_ambient_noise(source, duration=1.0)
-                print(" [AUDIO] Listening...")
-                # Increased timeout to give student time to think
-                audio = r.listen(source, timeout=5, phrase_time_limit=5)
-                
-                update_status("PROCESSING AUDIO")
-                name = r.recognize_sphinx(audio).lower() # or recognize_google if online
-                print(f" [AUDIO] Heard: {name}")
-                return name
-        except sr.WaitTimeoutError:
-            print(" [AUDIO] Timeout.")
-            return None
-        except sr.UnknownValueError:
-            return None
-        except Exception as e:
-            print(f" [AUDIO] Error: {e}")
-            return None
-        finally:
-            update_status("IDLE")
-
-# --- REGISTRATION HELPER ---
-def save_new_student(name, frame):
-    """Saves image and updates JSON"""
-    try:
-        clean_name = name.replace(" ", "_")
-        
-        # 1. Save Image
-        img_path = f"student_pics/{clean_name}.jpg"
-        cv2.imwrite(img_path, frame)
-        print(f" [SAVE] Image saved to {img_path}")
-
-        # 2. Update JSON
-        json_file = 'students.json'
-        if not os.path.exists(json_file):
-            with open(json_file, 'w') as f: json.dump({}, f)
-            
-        with open(json_file, 'r') as f:
-            db = json.load(f)
-            
-        db[clean_name] = {
-            "registered": True,
-            "timestamp": time.time(),
-            "full_name": name
+        /* --- CAMERA & STATUS --- */
+        .camera-feed {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            border: 2px solid #555;
+            border-radius: 10px;
+            opacity: 0.8;
         }
         
-        with open(json_file, 'w') as f:
-            json.dump(db, f, indent=4)
-            
-        # 3. Update In-Memory Lists (So we don't need to restart to recognize them)
-        # Note: We re-encode the saved frame to ensure it matches what the file system has
-        new_encoding = face_recognition.face_encodings(frame)
-        if len(new_encoding) > 0:
-            known_face_encodings.append(new_encoding[0])
-            known_face_names.append(clean_name)
-            
-        return True
-    except Exception as e:
-        print(f" [ERROR] Save failed: {e}")
-        return False
+        #status-text { margin-top: 20px; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; font-weight: bold; }
 
-# --- WEB SERVER ---
-@app.route('/')
-def index():
-    return render_template('index.html')
+        /* --- INPUT FORM OVERLAY --- */
+        #input-area {
+            display: none; /* Hidden by default */
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            border: 2px solid #00e5ff;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 0 50px rgba(0, 229, 255, 0.3);
+            text-align: center;
+            z-index: 100;
+        }
 
-def generate_frames():
-    global video_frame
-    while True:
-        if video_frame is not None:
-            try:
-                ret, buffer = cv2.imencode('.jpg', video_frame)
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            except Exception as e:
-                pass
-        time.sleep(0.04)
+        input {
+            display: block;
+            width: 300px;
+            padding: 15px;
+            margin: 20px 0;
+            background: #222;
+            border: 1px solid #00e5ff;
+            color: #fff;
+            font-size: 20px;
+            font-family: inherit;
+            outline: none;
+            text-align: center;
+        }
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+        button {
+            padding: 10px 30px;
+            background: #00e5ff;
+            border: none;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        button:hover { background: #fff; box-shadow: 0 0 20px #fff; }
 
-@app.route('/status_feed')
-def status_feed():
-    def generate():
-        while True:
-            yield f"data: {current_status}\n\n"
-            time.sleep(0.5)
-    return Response(generate(), mimetype="text/event-stream")
+    </style>
+</head>
+<body>
 
-# --- REGISTRATION LOGIC LOOP ---
-def registration_logic_loop():
-    global current_detected_name, video_frame
-    
-    time.sleep(3) 
-    speak("Registration Mode Online.")
-    
-    while True:
-        update_status("WAITING FOR STUDENT")
+    <div id="face-container" class="face">
+        <div class="eyes-row">
+            <div class="eye left"></div>
+            <div class="eye right"></div>
+        </div>
+        <div class="mouth"></div>
+    </div>
+
+    <div id="status-text">SYSTEM READY</div>
+
+    <!-- Input Form (Hidden until needed) -->
+    <div id="input-area">
+        <h2 style="color: #00e5ff; margin:0;">NEW STUDENT DETECTED</h2>
+        <p>Please enter your full name:</p>
+        <input type="text" id="student-name" placeholder="John Doe" autocomplete="off">
+        <button onclick="submitName()">REGISTER</button>
+    </div>
+
+    <img src="/video_feed" class="camera-feed" alt="Vision">
+
+    <script>
+        const face = document.getElementById('face-container');
+        const text = document.getElementById('status-text');
+        const inputArea = document.getElementById('input-area');
+        const nameInput = document.getElementById('student-name');
+        let isInputVisible = false;
+
+        // Listen for Python Status
+        const evtSource = new EventSource("/status_feed");
         
-        # 1. Wait until a face is detected
-        if current_detected_name is None:
-            time.sleep(0.5)
-            continue
+        evtSource.onmessage = function(event) {
+            const state = event.data;
+            text.innerText = state;
 
-        detected = current_detected_name
-        
-        # 2. Case: Already Registered
-        if detected != "Unknown":
-            update_status(f"WELCOME BACK {detected}")
-            speak(f"Hello {detected}. You are already registered.")
-            time.sleep(1)
-            speak("Please step aside for the next student.")
-            
-            # Wait for them to leave
-            while current_detected_name is not None:
-                time.sleep(0.5)
-            continue
+            // Reset Face Class
+            face.className = 'face';
 
-        # 3. Case: New Person (Unknown)
-        if detected == "Unknown":
-            update_status("NEW STUDENT DETECTED")
-            speak("Hello. I do not recognize you.")
-            time.sleep(0.5)
-            speak("Please look at the camera for registration.")
-            
-            # Wait a moment to ensure good frame capture
-            time.sleep(1) 
-            
-            # Check if they are still there
-            if current_detected_name is None:
-                continue
+            // Handle Input Mode
+            if (state.includes("INPUT REQUIRED") && !isInputVisible) {
+                isInputVisible = true;
+                inputArea.style.display = "block";
+                face.classList.add('waiting-input');
+                nameInput.value = "";
+                nameInput.focus();
+            }
 
-            # Capture current frame for saving
-            registration_frame = video_frame.copy() if video_frame is not None else None
+            // Handle Success/Idle (Hide Input)
+            if (!state.includes("INPUT REQUIRED") && isInputVisible) {
+                isInputVisible = false;
+                inputArea.style.display = "none";
+            }
 
-            speak("Please say your name clearly after the beep.")
-            # Simulated beep in status
-            update_status("LISTENING FOR NAME...")
-            
-            name = listen_for_name()
-            
-            if name:
-                speak(f"I heard {name}.")
-                update_status(f"SAVING: {name}")
-                
-                if registration_frame is not None:
-                    success = save_new_student(name, registration_frame)
-                    
-                    if success:
-                        speak("Face and name captured successfully.")
-                        speak("You are now registered.")
-                        speak("Next student please.")
-                        
-                        # Wait for them to leave
-                        while current_detected_name is not None:
-                            time.sleep(1)
-                    else:
-                        speak("System error saving data. Please try again.")
-                else:
-                    speak("Camera error. Could not save face.")
-            else:
-                speak("I did not hear a name. Resetting process.")
-                time.sleep(2)
+            if (state.includes("REGISTERED")) face.classList.add('success');
+        };
 
-# --- VISION LOOP (UNCHANGED PIPELINE) ---
-def vision_loop():
-    global video_frame, current_detected_name
-    
-    print(" [VISION] Starting Camera...")
-    
-    # Keeping the specialized pipeline from the original code
-    pipelines = [
-        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
-        0
-    ]
-    
-    cap = None
-    for pipeline in pipelines:
-        if isinstance(pipeline, str):
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-        else:
-            cap = cv2.VideoCapture(pipeline)
-            
-        if cap.isOpened():
-            print(f" [VISION] Camera opened with: {pipeline}")
-            break
-            
-    if not cap or not cap.isOpened():
-        print(" [ERROR] Could not open any camera.")
-        return
+        // Send Name to Python
+        function submitName() {
+            const name = nameInput.value;
+            if(!name) return;
 
-    frame_count = 0
-    cached_face_locations = []
-    cached_face_names = []
+            fetch('/register_student', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name })
+            }).then(() => {
+                inputArea.style.display = "none"; // Hide immediately for better UX
+            });
+        }
 
-    while True:
-        try:
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.1)
-                continue
-            
-            frame_count += 1
-            
-            # Detect faces every 5th frame to save CPU
-            if frame_count % 5 == 0:
-                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-                
-                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
-                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
-                
-                cached_face_names = []
-                detected_name = None
-
-                if face_encodings:
-                    for face_encoding in face_encodings:
-                        name = "Unknown"
-                        if len(known_face_encodings) > 0:
-                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
-                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                            
-                            if len(face_distances) > 0:
-                                best_match_index = np.argmin(face_distances)
-                                if matches[best_match_index]:
-                                    name = known_face_names[best_match_index]
-                        
-                        cached_face_names.append(name)
-                        detected_name = name # Just grab the last one detected
-                
-                current_detected_name = detected_name
-            
-            # Visuals
-            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
-                top *= 4; right *= 4; bottom *= 4; left *= 4
-                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
-                cv2.putText(frame, str(name), (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-
-            video_frame = frame
-            
-        except Exception as e:
-            print(f" [VISION WARNING] {e}")
-            time.sleep(0.1)
-
-if __name__ == "__main__":
-    load_student_data()
-    
-    t_vis = threading.Thread(target=vision_loop, daemon=True)
-    t_vis.start()
-    
-    t_log = threading.Thread(target=registration_logic_loop, daemon=True)
-    t_log.start()
-
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+        // Allow "Enter" key to submit
+        nameInput.addEventListener("keypress", function(event) {
+            if (event.key === "Enter") submitName();
+        });
+    </script>
+</body>
+</html>
