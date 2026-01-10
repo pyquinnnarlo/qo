@@ -1,14 +1,184 @@
-pcie@1000120000/rp1/i2c@88000/ov5647@36 to CFE device /dev/media2 and ISP device /dev/media0 using PiSP variant BCM2712_D0
-[2:18:41.955643886] [15126]  INFO Camera camera.cpp:1215 configuring streams: (0) 640x480-YUYV/Rec709
-[2:18:41.955752476] [15123]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 - Selected sensor format: 640x480-SGBRG10_1X10/RAW - Selected CFE format: 640x480-PC1g/RAW
-[ WARN:0@2.263] global cap_gstreamer.cpp:1754 open OpenCV | GStreamer warning: unable to query duration of stream
-[ WARN:0@2.263] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
-Robot: System Online.
-Robot: Hello. I do not recognize you.
-Robot: Please look directly at the camera.
-Robot: Please remove any hats, glasses, or hair covering your face.
-Robot: Hold still.
-Robot: Face captured.
-Robot: Please enter your Name and ID on the screen.
-Segmentation fault
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registration Kiosk</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+
+        /* --- FACE UI --- */
+        .face {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 50px;
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .eyes-row { display: flex; gap: 80px; }
+        .eye {
+            width: 100px;
+            height: 120px;
+            background: #00e5ff;
+            border-radius: 40%;
+            box-shadow: 0 0 20px #00e5ff;
+            transition: all 0.2s;
+        }
+
+        .mouth {
+            width: 150px;
+            height: 10px;
+            background: #00e5ff;
+            border-radius: 10px;
+            box-shadow: 0 0 10px #00e5ff;
+            transition: all 0.1s;
+        }
+
+        /* STATES */
+        .paused .eye { background: #555; height: 10px; box-shadow: none; } /* Sleep mode */
+        .waiting-input .eye { background: #ff00ff; height: 100px; box-shadow: 0 0 40px #ff00ff; }
+        .success .eye { background: #00ff00; }
+        .success .mouth { background: #00ff00; width: 180px; height: 20px; border-radius: 0 0 100px 100px; }
+
+        /* --- CAMERA & STATUS --- */
+        .camera-feed {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            border: 2px solid #555;
+            border-radius: 10px;
+            opacity: 0.8;
+        }
+        
+        #status-text { margin-top: 20px; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; font-weight: bold; text-align: center;}
+
+        /* --- INPUT FORM --- */
+        #input-area {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.95);
+            border: 2px solid #00e5ff;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 0 50px rgba(0, 229, 255, 0.3);
+            text-align: center;
+            z-index: 100;
+        }
+
+        input {
+            display: block;
+            width: 300px;
+            padding: 15px;
+            margin: 15px 0;
+            background: #222;
+            border: 1px solid #00e5ff;
+            color: #fff;
+            font-size: 18px;
+            outline: none;
+            text-align: center;
+        }
+
+        button {
+            padding: 10px 30px;
+            background: #00e5ff;
+            border: none;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="face-container" class="face">
+        <div class="eyes-row">
+            <div class="eye left"></div>
+            <div class="eye right"></div>
+        </div>
+        <div class="mouth"></div>
+    </div>
+
+    <div id="status-text">SYSTEM READY</div>
+
+    <div id="input-area">
+        <h2 style="color: #00e5ff; margin:0 0 20px 0;">REGISTRATION</h2>
+        <input type="text" id="student-name" placeholder="Full Name" autocomplete="off">
+        <input type="text" id="student-id" placeholder="Student ID" autocomplete="off">
+        <button onclick="submitData()">REGISTER</button>
+    </div>
+
+    <img src="/video_feed" class="camera-feed" alt="Vision">
+
+    <script>
+        const face = document.getElementById('face-container');
+        const text = document.getElementById('status-text');
+        const inputArea = document.getElementById('input-area');
+        const nameInput = document.getElementById('student-name');
+        const idInput = document.getElementById('student-id');
+        let isInputVisible = false;
+
+        const evtSource = new EventSource("/status_feed");
+        
+        evtSource.onmessage = function(event) {
+            const state = event.data;
+            text.innerText = state;
+            face.className = 'face';
+
+            // Show Input Box
+            if (state.includes("INPUT REQUIRED") && !isInputVisible) {
+                isInputVisible = true;
+                inputArea.style.display = "block";
+                face.classList.add('waiting-input');
+                nameInput.value = "";
+                idInput.value = "";
+                nameInput.focus();
+            }
+
+            // Hide Input Box
+            if (!state.includes("INPUT REQUIRED") && isInputVisible) {
+                isInputVisible = false;
+                inputArea.style.display = "none";
+            }
+            
+            if (state.includes("REGISTERED")) face.classList.add('success');
+            if (state.includes("CAPTURED")) face.classList.add('paused');
+        };
+
+        function submitData() {
+            const name = nameInput.value;
+            const studentId = idInput.value;
+            if(!name || !studentId) { alert("Both fields required"); return; }
+
+            fetch('/register_student', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, id: studentId })
+            }).then(() => { 
+                inputArea.style.display = "none"; 
+            });
+        }
+        
+        idInput.addEventListener("keypress", function(event) {
+            if (event.key === "Enter") submitData();
+        });
+    </script>
+</body>
+</html>
