@@ -1,190 +1,284 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Registration Kiosk</title>
-    <style>
-        body {
-            background-color: #1a1a1a;
-            color: #0f0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            font-family: 'Courier New', monospace;
-            overflow: hidden;
-        }
+import threading
+import cv2
+import os
+import time
+import json
+import face_recognition
+import numpy as np
+import logging
+import hashlib
+import subprocess
+from flask import Flask, render_template, Response, request, jsonify
+from gtts import gTTS
 
-        /* --- FACE CONTAINER --- */
-        .face {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 50px;
-            transition: all 0.3s;
-            margin-bottom: 20px;
-        }
+# --- CONFIGURATION ---
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
-        .eyes-row { display: flex; gap: 80px; }
-        .eye {
-            width: 100px;
-            height: 120px;
-            background: #00e5ff;
-            border-radius: 40%;
-            box-shadow: 0 0 20px #00e5ff;
-            transition: all 0.2s;
-        }
+# Global Variables
+video_frame = None
+known_face_encodings = []
+known_face_names = []
+current_detected_name = None  
+current_status = "SYSTEM READY"
 
-        .mouth {
-            width: 150px;
-            height: 10px;
-            background: #00e5ff;
-            border-radius: 10px;
-            box-shadow: 0 0 10px #00e5ff;
-            transition: all 0.1s;
-        }
+# Thread Communication
+pending_name_input = None
+registration_frame_buffer = None
 
-        /* STATES */
-        .waiting-input .eye { background: #ff00ff; height: 100px; box-shadow: 0 0 40px #ff00ff; }
-        .waiting-input .mouth { background: #ff00ff; width: 40px; height: 40px; border-radius: 50%; }
+# --- DATABASE MANAGEMENT ---
+def load_student_data():
+    print(" [DB] Loading Student Faces...")
+    global known_face_encodings, known_face_names
+    
+    known_face_encodings = []
+    known_face_names = []
 
-        .success .eye { background: #00ff00; }
-        .success .mouth { background: #00ff00; width: 180px; height: 20px; border-radius: 0 0 100px 100px; }
+    path = "student_pics"
+    if not os.path.exists(path):
+        os.makedirs(path)
 
-        /* --- CAMERA & STATUS --- */
-        .camera-feed {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 200px;
-            border: 2px solid #555;
-            border-radius: 10px;
-            opacity: 0.8;
+    for file in os.listdir(path):
+        if file.endswith((".jpg", ".png", ".jpeg")):
+            try:
+                img = face_recognition.load_image_file(f"{path}/{file}")
+                encodings = face_recognition.face_encodings(img)
+                if len(encodings) > 0:
+                    known_face_encodings.append(encodings[0])
+                    name = os.path.splitext(file)[0].replace("_", " ")
+                    known_face_names.append(name)
+                    print(f"   + Loaded: {name}")
+            except Exception:
+                pass
+    print(f" [DB] Loaded {len(known_face_names)} students.")
+
+def save_new_student(name, frame):
+    try:
+        clean_name = name.strip().replace(" ", "_")
+        
+        # 1. Save Image
+        img_path = f"student_pics/{clean_name}.jpg"
+        cv2.imwrite(img_path, frame)
+        print(f" [SAVE] Saved {img_path}")
+
+        # 2. Update JSON
+        json_file = 'students.json'
+        if not os.path.exists(json_file):
+            with open(json_file, 'w') as f: json.dump({}, f)
+            
+        with open(json_file, 'r') as f: db = json.load(f)
+            
+        db[clean_name] = {
+            "registered": True,
+            "timestamp": time.time(),
+            "full_name": name
         }
         
-        #status-text { margin-top: 20px; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; font-weight: bold; }
+        with open(json_file, 'w') as f: json.dump(db, f, indent=4)
+            
+        # 3. Update Memory
+        new_encoding = face_recognition.face_encodings(frame)
+        if len(new_encoding) > 0:
+            known_face_encodings.append(new_encoding[0])
+            known_face_names.append(name) # Store as readable name in memory
+            
+        return True
+    except Exception as e:
+        print(f" [ERROR] Save failed: {e}")
+        return False
 
-        /* --- INPUT FORM OVERLAY --- */
-        #input-area {
-            display: none; /* Hidden by default */
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.9);
-            border: 2px solid #00e5ff;
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 0 50px rgba(0, 229, 255, 0.3);
-            text-align: center;
-            z-index: 100;
-        }
+# --- AUDIO OUT ---
+def update_status(status):
+    global current_status
+    current_status = status
 
-        input {
-            display: block;
-            width: 300px;
-            padding: 15px;
-            margin: 20px 0;
-            background: #222;
-            border: 1px solid #00e5ff;
-            color: #fff;
-            font-size: 20px;
-            font-family: inherit;
-            outline: none;
-            text-align: center;
-        }
+def speak(text):
+    global current_status
+    print(f"Robot: {text}")
+    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
+    file_path = f"audio_cache/{filename}"
+    
+    if not os.path.exists("audio_cache"): os.makedirs("audio_cache")
+    if not os.path.exists(file_path):
+        try:
+            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts.save(file_path)
+        except: return
 
-        button {
-            padding: 10px 30px;
-            background: #00e5ff;
-            border: none;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            font-family: inherit;
-        }
-        button:hover { background: #fff; box-shadow: 0 0 20px #fff; }
+    subprocess.run(["mpg123", "-q", file_path])
 
-    </style>
-</head>
-<body>
+# --- FLASK ROUTES ---
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    <div id="face-container" class="face">
-        <div class="eyes-row">
-            <div class="eye left"></div>
-            <div class="eye right"></div>
-        </div>
-        <div class="mouth"></div>
-    </div>
+@app.route('/video_feed')
+def video_feed():
+    def generate():
+        while True:
+            if video_frame is not None:
+                ret, buffer = cv2.imencode('.jpg', video_frame)
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.04)
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-    <div id="status-text">SYSTEM READY</div>
+@app.route('/status_feed')
+def status_feed():
+    def generate():
+        while True:
+            yield f"data: {current_status}\n\n"
+            time.sleep(0.2)
+    return Response(generate(), mimetype="text/event-stream")
 
-    <!-- Input Form (Hidden until needed) -->
-    <div id="input-area">
-        <h2 style="color: #00e5ff; margin:0;">NEW STUDENT DETECTED</h2>
-        <p>Please enter your full name:</p>
-        <input type="text" id="student-name" placeholder="John Doe" autocomplete="off">
-        <button onclick="submitName()">REGISTER</button>
-    </div>
+# --- NEW: INPUT HANDLER ---
+@app.route('/register_student', methods=['POST'])
+def register_student():
+    global pending_name_input
+    data = request.json
+    name = data.get('name')
+    if name:
+        print(f" [WEB] Received Name: {name}")
+        pending_name_input = name
+        return jsonify({"status": "received"}), 200
+    return jsonify({"status": "error"}), 400
 
-    <img src="/video_feed" class="camera-feed" alt="Vision">
+# --- LOGIC LOOP ---
+def logic_loop():
+    global current_detected_name, pending_name_input, registration_frame_buffer
+    
+    time.sleep(2)
+    speak("System Online.")
 
-    <script>
-        const face = document.getElementById('face-container');
-        const text = document.getElementById('status-text');
-        const inputArea = document.getElementById('input-area');
-        const nameInput = document.getElementById('student-name');
-        let isInputVisible = false;
-
-        // Listen for Python Status
-        const evtSource = new EventSource("/status_feed");
+    while True:
+        update_status("WAITING FOR STUDENT")
         
-        evtSource.onmessage = function(event) {
-            const state = event.data;
-            text.innerText = state;
+        # 1. Wait for Face
+        if current_detected_name is None:
+            time.sleep(0.5)
+            continue
 
-            // Reset Face Class
-            face.className = 'face';
+        detected = current_detected_name
 
-            // Handle Input Mode
-            if (state.includes("INPUT REQUIRED") && !isInputVisible) {
-                isInputVisible = true;
-                inputArea.style.display = "block";
-                face.classList.add('waiting-input');
-                nameInput.value = "";
-                nameInput.focus();
-            }
+        # 2. Existing Student
+        if detected != "Unknown":
+            update_status(f"HELLO {detected}")
+            speak(f"Welcome back, {detected}.")
+            time.sleep(2)
+            while current_detected_name is not None: time.sleep(0.5)
+            continue
 
-            // Handle Success/Idle (Hide Input)
-            if (!state.includes("INPUT REQUIRED") && isInputVisible) {
-                isInputVisible = false;
-                inputArea.style.display = "none";
-            }
+        # 3. New Student
+        if detected == "Unknown":
+            update_status("NEW FACE DETECTED")
+            speak("Hello. I do not recognize you.")
+            time.sleep(0.5)
+            
+            # Freeze the frame for registration so we don't save a blurry one later
+            if video_frame is not None:
+                registration_frame_buffer = video_frame.copy()
+            else:
+                continue
 
-            if (state.includes("REGISTERED")) face.classList.add('success');
-        };
+            speak("Please type your name on the screen.")
+            
+            # --- ENTER INPUT MODE ---
+            update_status("INPUT REQUIRED") # This triggers the JS Popup
+            
+            # Wait loop for Web Input
+            timeout_counter = 0
+            while pending_name_input is None:
+                time.sleep(0.5)
+                timeout_counter += 1
+                if timeout_counter > 60: # 30 seconds timeout
+                    break
+            
+            # Process Input
+            if pending_name_input:
+                name = pending_name_input
+                update_status("SAVING DATA...")
+                
+                success = save_new_student(name, registration_frame_buffer)
+                
+                if success:
+                    update_status(f"REGISTERED: {name}")
+                    speak(f"Thank you {name}. Registration complete.")
+                else:
+                    speak("Error saving data.")
+                
+                # Reset
+                pending_name_input = None
+                registration_frame_buffer = None
+                
+                # Wait for them to leave
+                speak("Please step aside.")
+                while current_detected_name is not None: time.sleep(1)
+            else:
+                update_status("TIMEOUT")
+                speak("Registration timed out.")
+                time.sleep(2)
 
-        // Send Name to Python
-        function submitName() {
-            const name = nameInput.value;
-            if(!name) return;
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name
+    
+    # Standard Webcam (change 0 to pipeline string if using Pi Camera Module)
+    pipelines = [
+        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
+        0
+    ]
+    
+    cap = None
+    for pipeline in pipelines:
+        if isinstance(pipeline, str):
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        else:
+            cap = cv2.VideoCapture(pipeline) 
+        if cap.isOpened(): break
+            
+    frame_count = 0
 
-            fetch('/register_student', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name })
-            }).then(() => {
-                inputArea.style.display = "none"; // Hide immediately for better UX
-            });
-        }
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.1)
+            continue
+            
+        frame_count += 1
+        
+        if frame_count % 5 == 0: # Detect every 5th frame
+            small = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            
+            locs = face_recognition.face_locations(rgb)
+            encs = face_recognition.face_encodings(rgb, locs)
+            
+            names = []
+            det_name = None
 
-        // Allow "Enter" key to submit
-        nameInput.addEventListener("keypress", function(event) {
-            if (event.key === "Enter") submitName();
-        });
-    </script>
-</body>
-</html>
+            for enc in encs:
+                name = "Unknown"
+                if known_face_encodings:
+                    matches = face_recognition.compare_faces(known_face_encodings, enc, tolerance=0.5)
+                    dists = face_recognition.face_distance(known_face_encodings, enc)
+                    if len(dists) > 0:
+                        best = np.argmin(dists)
+                        if matches[best]: name = known_face_names[best]
+                names.append(name)
+                det_name = name
+            
+            current_detected_name = det_name
+            
+            # Draw
+            for (top, right, bottom, left), name in zip(locs, names):
+                top*=4; right*=4; bottom*=4; left*=4
+                cv2.rectangle(frame, (left, top), (right, bottom), (0,255,0), 2)
+                cv2.putText(frame, name, (left, top-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+        video_frame = frame
+
+if __name__ == "__main__":
+    load_student_data()
+    threading.Thread(target=vision_loop, daemon=True).start()
+    threading.Thread(target=logic_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
