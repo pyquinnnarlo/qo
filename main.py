@@ -8,6 +8,7 @@ import face_recognition
 import numpy as np
 import logging
 import hashlib
+import subprocess
 from flask import Flask, render_template, Response
 from gtts import gTTS
 from ctypes import *
@@ -27,7 +28,6 @@ def no_alsa_errors():
         yield
         asound.snd_lib_error_set_handler(None)
     except:
-        # Fallback if libasound cannot be loaded (e.g. non-linux env)
         yield
 
 # --- CONFIGURATION ---
@@ -35,7 +35,6 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# MIC_INDEX = None uses the System Default (configured in Pi Desktop)
 MIC_INDEX = None 
 
 # Global Variables
@@ -76,7 +75,6 @@ def load_student_data():
 
 def check_registration(name):
     try:
-        # Create dummy file if it doesn't exist to prevent crash
         if not os.path.exists('students.json'):
             with open('students.json', 'w') as f:
                 json.dump({}, f)
@@ -91,7 +89,7 @@ def check_registration(name):
         print(f" [DB ERROR] {e}")
         return None
 
-# --- AUDIO FUNCTIONS (UPDATED FOR MPG123) ---
+# --- AUDIO FUNCTIONS ---
 def update_status(status):
     global current_status
     current_status = status
@@ -100,18 +98,15 @@ def speak(text):
     global current_status
     print(f"Robot: {text}")
     
-    # Update UI to make mouth move
     prev_status = current_status
     update_status(f"SPEAKING: {text}")
     
-    # 1. Create a unique filename based on the text (Caching)
     filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
     file_path = f"audio_cache/{filename}"
     
     if not os.path.exists("audio_cache"):
         os.makedirs("audio_cache")
 
-    # 2. Generate Audio if it doesn't exist
     if not os.path.exists(file_path):
         try:
             tts = gTTS(text=text, lang='en', tld='co.uk')
@@ -121,12 +116,8 @@ def speak(text):
             update_status(prev_status)
             return
 
-    # 3. Play the MP3 file using mpg123
-    # -q : quiet mode (no printout)
-    exit_code = os.system(f"mpg123 -q {file_path}")
-    
-    if exit_code != 0:
-        print(" [ERROR] mpg123 failed to play. Is it installed?")
+    # Use subprocess for cleaner execution than os.system
+    subprocess.run(["mpg123", "-q", file_path])
     
     update_status(prev_status)
 
@@ -199,16 +190,24 @@ def exam_logic_loop():
     while True:
         update_status("WAITING FOR FACE")
         
-        # 1. Wait for Face
+        # 1. Wait until a face is detected
         if current_detected_name is None:
-            # We don't want to spam "Look at camera" constantly
-            if time.time() % 10 < 1: # Only checks every ~10 seconds roughly for speech trigger
-                 pass 
-            
             time.sleep(0.5)
             continue
             
-        # 2. Process Face
+        # 2. Face Detected -> Greet and Instruct
+        update_status("INSTRUCTING STUDENT")
+        speak("Hi, Please look directly at the camera. Please remove any things from your face or head for proper detection.")
+        
+        # 3. Wait 3 seconds for them to comply
+        time.sleep(3)
+        
+        # 4. Check if student is still there
+        if current_detected_name is None:
+            speak("Face lost. Process reset.")
+            continue
+            
+        # 5. Process Face
         name = current_detected_name
         update_status(f"PROCESSING: {name}")
         
@@ -218,17 +217,27 @@ def exam_logic_loop():
                 speak(f"I heard {spoken_name}.")
                 name = spoken_name.replace(" ", "_")
             else:
-                # If recognition failed, go back to wait
                 current_detected_name = None
                 continue
         
-        # 3. Validation
+        # 6. Validation
         is_registered = check_registration(name)
         
         if is_registered is True:
             speak(f"Hello {name}.")
             time.sleep(0.2)
-            speak("You are registered. You may enter.")
+            speak("You are registered.")
+            
+            # --- RULES ANNOUNCEMENT ---
+            update_status("READING RULES")
+            speak("Attention. Please listen to the exam rules.")
+            time.sleep(0.2)
+            speak("No phones or smart watches are allowed in the exam hall or during the exam.")
+            time.sleep(0.2)
+            speak("Failure to follow these rules will result in the dismissal of the test.")
+            time.sleep(0.2)
+            
+            speak("You may enter now.")
             
             # Wait for them to leave
             while current_detected_name == name: time.sleep(1)
@@ -243,20 +252,18 @@ def exam_logic_loop():
                 speak(f"I cannot find registration for {name}.")
                 time.sleep(2)
         
-        # Reset to avoid loop
         time.sleep(1) 
 
-# --- VISION LOOP ---
+# --- VISION LOOP (FIXED PIPELINE) ---
 def vision_loop():
     global video_frame, current_detected_name
     
     print(" [VISION] Starting Camera...")
     
-    # Try multiple camera pipelines if Gstreamer fails
+    # --- CRITICAL FIX: 'drop=true max-buffers=1' prevents the crash ---
+    # We also lowered framerate to 15/1 to prevent CPU overload
     pipelines = [
-        # Standard RPi libcamera
-        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=30/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink",
-        # Standard USB Webcam
+        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
         0
     ]
     
@@ -280,53 +287,56 @@ def vision_loop():
     cached_face_names = []
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.1)
-            continue
-        
-        frame_count += 1
-        
-        # --- OPTIMIZATION: Only detect faces every 5th frame ---
-        if frame_count % 5 == 0:
-            # Resize for faster processing
-            small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
             
-            cached_face_locations = face_recognition.face_locations(rgb_small_frame)
-            face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+            frame_count += 1
             
-            cached_face_names = []
-            detected_name = None
+            # Only detect faces every 5th frame
+            if frame_count % 5 == 0:
+                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                
+                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+                
+                cached_face_names = []
+                detected_name = None
 
-            if face_encodings:
-                for face_encoding in face_encodings:
-                    name = "Unknown"
-                    if len(known_face_encodings) > 0:
-                        matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                if face_encodings:
+                    for face_encoding in face_encodings:
+                        name = "Unknown"
+                        if len(known_face_encodings) > 0:
+                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                            
+                            if len(face_distances) > 0:
+                                best_match_index = np.argmin(face_distances)
+                                if matches[best_match_index]:
+                                    name = known_face_names[best_match_index]
                         
-                        if len(face_distances) > 0:
-                            best_match_index = np.argmin(face_distances)
-                            if matches[best_match_index]:
-                                name = known_face_names[best_match_index]
-                    
-                    cached_face_names.append(name)
-                    detected_name = name
-            
-            current_detected_name = detected_name
+                        cached_face_names.append(name)
+                        detected_name = name
+                
+                current_detected_name = detected_name
 
-        # Draw rectangles
-        for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
-            top *= 4; right *= 4; bottom *= 4; left *= 4
-            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-            
-            # Draw label with background
-            cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
-            cv2.putText(frame, str(name), (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+            # Draw rectangles
+            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
+                top *= 4; right *= 4; bottom *= 4; left *= 4
+                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+                cv2.putText(frame, str(name), (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
 
-        video_frame = frame
+            video_frame = frame
+            
+        except Exception as e:
+            # Catching frame errors to prevent loop death
+            print(f" [VISION WARNING] {e}")
+            time.sleep(0.1)
 
 if __name__ == "__main__":
     load_student_data()
@@ -337,5 +347,4 @@ if __name__ == "__main__":
     t_log = threading.Thread(target=exam_logic_loop, daemon=True)
     t_log.start()
 
-    # Run Flask
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
