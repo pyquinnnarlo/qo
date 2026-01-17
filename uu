@@ -1,0 +1,99 @@
+Good — that output tells us **exactly what’s happening** 👍
+
+### What your `aplay -l` means
+
+You currently have:
+
+* ✅ **HDMI audio working** (both HDMI ports detected)
+* ❌ **No headphone / 3.5mm audio device** (`rp1-audio` is missing)
+
+So this is **not** a general audio failure — it’s specifically that the **Pi 5 analog audio driver is not enabled/loaded**.
+
+---
+
+## ✅ Fix: Enable Pi 5 headphone jack (rp1-audio)
+
+### 1️⃣ Edit the correct config file (important on Pi 5)
+
+```bash
+sudo nano /boot/firmware/config.txt
+```
+
+### 2️⃣ Add (or ensure) these lines exist
+
+```ini
+dtparam=audio=on
+dtoverlay=rp1-audio
+```
+
+⚠️ These are **mandatory on Raspberry Pi 5**
+Older `bcm2835-audio` / PWM guides do NOT apply.
+
+Save → Exit (`Ctrl+O`, Enter, `Ctrl+X`)
+
+---
+
+### 3️⃣ Reboot
+
+```bash
+sudo reboot
+```
+
+---
+
+### 4️⃣ Verify
+
+After reboot:
+
+```bash
+aplay -l
+```
+
+You should now see **something like**:
+
+```
+card 2: rp1audio [rp1-audio], device 0: rp1-audio
+```
+
+---
+
+## 5️⃣ Select headphone output
+
+### GUI
+
+* Speaker icon → Audio Settings
+* Output device → **Headphones (rp1-audio)**
+
+### Terminal
+
+```bash
+raspi-config
+```
+
+→ System Options → Audio → Headphones
+
+---
+
+## If it STILL doesn’t appear
+
+Run these and paste the output:
+
+```bash
+lsmod | grep rp1
+dmesg | grep audio
+```
+
+---
+
+## Summary
+
+✔ HDMI audio = OK
+❌ Headphone jack missing = `rp1-audio` overlay not enabled
+🔧 Adding `dtoverlay=rp1-audio` fixes this on **almost every Pi 5**
+
+Once you reboot, tell me:
+
+* Does `rp1-audio` show up?
+* Are you using the **3.5mm jack or HDMI** primarily?
+
+We’re very close — this is a known Pi 5 gotcha.
