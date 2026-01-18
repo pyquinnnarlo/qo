@@ -1,19 +1,5 @@
-# Save this as test_final.py
-import serial
-import time
-
-# Explicitly use ttyAMA0
-ser = serial.Serial("/dev/ttyAMA0", baudrate=9600, timeout=1)
-
-print("Attempting to send data...")
-ser.write(b"TEST")
-time.sleep(0.1)
-read_val = ser.read(4)
-
-print(f"Sent: TEST")
-print(f"Read: {read_val}")
-
-if read_val == b"TEST":
-    print("SUCCESS! The port is working.")
-else:
-    print("FAILURE. Still broken.")
+venv) fyplg@FYPLG:~/Desktop/pi/exam $ python print.py 
+Attempting to send data...
+Sent: TEST
+Read: b''
+FAILURE. Still broken.
