@@ -1,6 +1,3 @@
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python print.py 
-Opened /dev/ttyAMA0 successfully.
-FAILURE: Sent b'Hello Pi', but received b''
-(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python print.py 
-Opened /dev/ttyAMA10 successfully.
-FAILURE: Sent b'Hello Pi', but received b''
+pinctrl get 14,15
+14: a4    pn | hi // GPIO14 = TXD0
+15: a4    pu | hi // GPIO15 = RXD0
