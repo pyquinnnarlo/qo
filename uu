@@ -1,22 +1,6 @@
-import serial
-import time
-
-# Try /dev/ttyAMA0 first. If it fails, change to /dev/ttyS0
-PORT = "/dev/ttyAMA0" 
-
-try:
-    ser = serial.Serial(PORT, baudrate=9600, timeout=1)
-    print(f"Opened {PORT} successfully.")
-    
-    msg = b"Hello Pi"
-    ser.write(msg)
-    time.sleep(0.1)
-    received = ser.read(len(msg))
-    
-    if received == msg:
-        print("SUCCESS: Loopback test passed! The port works.")
-    else:
-        print(f"FAILURE: Sent {msg}, but received {received}")
-        
-except Exception as e:
-    print(f"CRITICAL ERROR: {e}")
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python print.py 
+Opened /dev/ttyAMA0 successfully.
+FAILURE: Sent b'Hello Pi', but received b''
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python print.py 
+Opened /dev/ttyAMA10 successfully.
+FAILURE: Sent b'Hello Pi', but received b''
