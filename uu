@@ -1,57 +1,17 @@
-# enroll_finger.py
-import time
-import serial
-import adafruit_fingerprint
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/serial/serialposix.py", line 322, in open
+    self.fd = os.open(self.portstr, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/dev/ttyS0'
 
-# Setup Serial Connection for Pi 5
-uart = serial.Serial("/dev/ttyS0", baudrate=57600, timeout=1)
-finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
+During handling of the above exception, another exception occurred:
 
-def enroll():
-    print("---------------------------------------")
-    print("   FINGERPRINT ENROLLMENT SYSTEM")
-    print("---------------------------------------")
-    
-    if finger.read_templates() != adafruit_fingerprint.OK:
-        print("Failed to read templates")
-        return
-
-    print(f"Current stored fingers: {finger.templates}")
-    
-    id_input = input("Enter ID # for this student (1-127): ")
-    try:
-        location = int(id_input)
-    except ValueError:
-        print("Invalid number.")
-        return
-
-    for i in range(1, 3):
-        print(f"\nStep {i}/2: Place finger on sensor...")
-        
-        while finger.get_image() != adafruit_fingerprint.OK:
-            pass # Wait for finger
-
-        print("Image taken.")
-        if finger.image_2_tz(i) != adafruit_fingerprint.OK:
-            print("Imaging error")
-            return
-        
-        print("Remove finger.")
-        time.sleep(1)
-        while finger.get_image() == adafruit_fingerprint.OK:
-            pass # Wait for remove
-
-    print("Creating model...")
-    if finger.create_model() != adafruit_fingerprint.OK:
-        print("Prints did not match!")
-        return
-
-    print(f"Storing model at #{location}...")
-    if finger.store_model(location) != adafruit_fingerprint.OK:
-        print("Error saving.")
-        return
-
-    print("Success! Finger enrolled.")
-
-if __name__ == "__main__":
-    enroll()
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/exam/print.py", line 7, in <module>
+    uart = serial.Serial("/dev/ttyS0", baudrate=57600, timeout=1)
+  File "/usr/lib/python3/dist-packages/serial/serialutil.py", line 244, in __init__
+    self.open()
+    ~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/serial/serialposix.py", line 325, in open
+    raise SerialException(msg.errno, "could not open port {}: {}".format(self._port, msg))
+serial.serialutil.SerialException: [Errno 2] could not open port /dev/ttyS0: [Errno 2] No such file or directory: '/dev/ttyS0'
