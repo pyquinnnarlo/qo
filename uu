@@ -1,12 +1,22 @@
-Traceback (most recent call last):
-  File "/home/fyplg/Desktop/pi/exam/print.py", line 8, in <module>
-    finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
-  File "/home/fyplg/Desktop/pi/exam/venv/lib/python3.13/site-packages/adafruit_fingerprint.py", line 127, in __init__
-    if self.verify_password() != OK:
-       ~~~~~~~~~~~~~~~~~~~~^^
-  File "/home/fyplg/Desktop/pi/exam/venv/lib/python3.13/site-packages/adafruit_fingerprint.py", line 143, in verify_password
-    return self._get_packet(12)[0]
-           ~~~~~~~~~~~~~~~~^^^^
-  File "/home/fyplg/Desktop/pi/exam/venv/lib/python3.13/site-packages/adafruit_fingerprint.py", line 348, in _get_packet
-    raise RuntimeError("Failed to read data from sensor")
-RuntimeError: Failed to read data from sensor
+import serial
+import time
+
+# Try /dev/ttyAMA0 first. If it fails, change to /dev/ttyS0
+PORT = "/dev/ttyAMA0" 
+
+try:
+    ser = serial.Serial(PORT, baudrate=9600, timeout=1)
+    print(f"Opened {PORT} successfully.")
+    
+    msg = b"Hello Pi"
+    ser.write(msg)
+    time.sleep(0.1)
+    received = ser.read(len(msg))
+    
+    if received == msg:
+        print("SUCCESS: Loopback test passed! The port works.")
+    else:
+        print(f"FAILURE: Sent {msg}, but received {received}")
+        
+except Exception as e:
+    print(f"CRITICAL ERROR: {e}")
