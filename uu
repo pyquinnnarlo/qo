@@ -1,17 +1,15 @@
+ls -l /dev/serial0 
+lrwxrwxrwx 1 root root 8 Jan 18 02:54 /dev/serial0 -> ttyAMA10
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ python print.py 
 Traceback (most recent call last):
-  File "/usr/lib/python3/dist-packages/serial/serialposix.py", line 322, in open
-    self.fd = os.open(self.portstr, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-FileNotFoundError: [Errno 2] No such file or directory: '/dev/ttyS0'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/fyplg/Desktop/pi/exam/print.py", line 7, in <module>
-    uart = serial.Serial("/dev/ttyS0", baudrate=57600, timeout=1)
-  File "/usr/lib/python3/dist-packages/serial/serialutil.py", line 244, in __init__
-    self.open()
-    ~~~~~~~~~^^
-  File "/usr/lib/python3/dist-packages/serial/serialposix.py", line 325, in open
-    raise SerialException(msg.errno, "could not open port {}: {}".format(self._port, msg))
-serial.serialutil.SerialException: [Errno 2] could not open port /dev/ttyS0: [Errno 2] No such file or directory: '/dev/ttyS0'
+  File "/home/fyplg/Desktop/pi/exam/print.py", line 8, in <module>
+    finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
+  File "/home/fyplg/Desktop/pi/exam/venv/lib/python3.13/site-packages/adafruit_fingerprint.py", line 127, in __init__
+    if self.verify_password() != OK:
+       ~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/fyplg/Desktop/pi/exam/venv/lib/python3.13/site-packages/adafruit_fingerprint.py", line 143, in verify_password
+    return self._get_packet(12)[0]
+           ~~~~~~~~~~~~~~~~^^^^
+  File "/home/fyplg/Desktop/pi/exam/venv/lib/python3.13/site-packages/adafruit_fingerprint.py", line 348, in _get_packet
+    raise RuntimeError("Failed to read data from sensor")
+RuntimeError: Failed to read data from sensor
