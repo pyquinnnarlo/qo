@@ -1,6 +1,6 @@
 # ======================
 # ENTRIES APP (UPDATED)
-# Multi-Face Blocking Added
+# Multi-Face Blocking + Deny Unknown + Save Denied Photo
 # Works With Updated Registration DB
 # ======================
 
@@ -133,6 +133,56 @@ def check_registration_by_face_name(face_name_key: str):
         print(f" [DB ERROR] {e}")
         return None
 
+# --- FRAME HELPERS ---
+def get_current_frame():
+    """Thread-safe snapshot of current frame."""
+    with frame_lock:
+        if video_frame is not None:
+            return video_frame.copy()
+    return None
+
+def save_denied_photo(frame, reason="unknown"):
+    """
+    Saves a screenshot of the denied student for audit.
+    - Saves full frame + metadata json sidecar.
+    - Only saves if exactly 1 face is present (prevents saving crowds).
+    """
+    try:
+        if frame is None:
+            return False
+
+        # verify single face in the snapshot
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        locs = face_recognition.face_locations(rgb)
+        if len(locs) != 1:
+            return False
+
+        folder = "denied_pics"
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"DENIED_{reason}_{ts}.jpg"
+        path = os.path.join(folder, filename)
+
+        cv2.imwrite(path, frame)
+
+        meta = {
+            "timestamp_unix": time.time(),
+            "timestamp_local": ts,
+            "reason": reason,
+            "faces_detected": len(locs),
+            "image_path": path,
+        }
+        with open(os.path.join(folder, f"DENIED_{reason}_{ts}.json"), "w") as f:
+            json.dump(meta, f, indent=2)
+
+        print(f" [DENIED] Saved: {path}")
+        return True
+    except Exception as e:
+        print(f" [DENIED ERROR] {e}")
+        return False
+
 # --- AUDIO FUNCTIONS ---
 def update_status(status):
     global current_status
@@ -169,8 +219,7 @@ def speak(text):
 
 def listen_for_name():
     """
-    Voice fallback (not reliable for verification unless name_key exists in DB).
-    Returns normalized name_key or None.
+    Kept for optional use, but DO NOT admit entry based on speech.
     """
     update_status("LISTENING")
     speak("Face not recognized. Please state your name.")
@@ -182,21 +231,12 @@ def listen_for_name():
             mic = sr.Microphone(device_index=MIC_INDEX)
             with mic as source:
                 r.adjust_for_ambient_noise(source, duration=0.5)
-                print(" [AUDIO] Listening...")
                 audio = r.listen(source, timeout=4, phrase_time_limit=4)
 
                 update_status("THINKING")
                 spoken = r.recognize_sphinx(audio).lower()
-                print(f" [AUDIO] Heard: {spoken}")
                 return _normalize_name_key(spoken)
-        except sr.WaitTimeoutError:
-            print(" [AUDIO] Timeout.")
-            return None
-        except sr.UnknownValueError:
-            speak("I did not understand.")
-            return None
-        except Exception as e:
-            print(f" [AUDIO] Error: {e}")
+        except:
             return None
         finally:
             update_status("IDLE")
@@ -269,31 +309,40 @@ def exam_logic_loop():
 
         update_status("INSTRUCTING STUDENT")
         speak("Hi. Look directly at the camera. Remove anything covering your face.")
-        time.sleep(3)
+        time.sleep(2)
 
         if current_detected_name is None:
             speak("Face lost. Process reset.")
             continue
 
-        # Multi-face check again after instructions
+        # Multi-face check again
         if current_face_count > 1 or current_detected_name == MULTI_LABEL:
             update_status("MULTIPLE FACES - BLOCKED")
             speak("Multiple faces detected. One student at a time.")
             continue
 
-        name_key = current_detected_name  # already normalized in vision loop
+        name_key = current_detected_name  # normalized in vision loop
         update_status(f"PROCESSING: {name_key}")
 
-        # Unknown -> voice fallback (still validates against DB by name_key)
+        # --- DENY IF NOT RECOGNIZED ---
         if name_key == UNKNOWN_LABEL:
-            spoken_name_key = listen_for_name()
-            if spoken_name_key:
-                speak(f"I heard {spoken_name_key.replace('_', ' ')}.")
-                name_key = spoken_name_key
-            else:
-                current_detected_name = None
-                continue
+            update_status("DENIED - NOT RECOGNIZED")
+            snap = get_current_frame()
+            save_denied_photo(snap, reason="not_recognized")
 
+            speak("Access denied. You are not recognized.")
+            speak("Please try again. If the problem continues, contact the administration.")
+
+            last_processed = "DENIED_UNKNOWN"
+            last_processed_time = time.time()
+
+            # Wait for them to leave
+            while current_detected_name == UNKNOWN_LABEL:
+                time.sleep(0.8)
+
+            continue
+
+        # If recognized but not in DB / not registered -> deny and snapshot
         is_registered = check_registration_by_face_name(name_key)
 
         if is_registered is True:
@@ -319,18 +368,21 @@ def exam_logic_loop():
 
             speak("Next student.")
 
-        elif is_registered is False:
-            speak(f"Alert. {name_key.replace('_', ' ')}, you are not registered.")
-            last_processed = name_key
+        else:
+            # Deny: either explicitly not registered (False) OR not found (None)
+            reason = "not_registered" if is_registered is False else "not_found_in_db"
+            update_status("DENIED - NOT REGISTERED")
+            snap = get_current_frame()
+            save_denied_photo(snap, reason=reason)
+
+            speak(f"Access denied. {name_key.replace('_', ' ')}, you are not registered.")
+            speak("Please try again or contact the administration.")
+
+            last_processed = f"DENIED_{name_key}"
             last_processed_time = time.time()
+
             while current_detected_name == name_key:
                 time.sleep(1)
-
-        else:
-            speak(f"I cannot find registration for {name_key.replace('_', ' ')}.")
-            last_processed = name_key
-            last_processed_time = time.time()
-            time.sleep(2)
 
         time.sleep(0.5)
 
@@ -381,12 +433,10 @@ def vision_loop():
                 cached_face_names = []
                 detected_name = None
 
-                # Multi-face state
                 if current_face_count > 1:
                     detected_name = MULTI_LABEL
                     cached_face_names = [MULTI_LABEL] * current_face_count
 
-                # Single face -> recognize
                 elif current_face_count == 1 and face_encodings:
                     face_encoding = face_encodings[0]
                     name = UNKNOWN_LABEL
@@ -402,7 +452,6 @@ def vision_loop():
                     detected_name = name
                     cached_face_names = [name]
 
-                # No face
                 else:
                     detected_name = None
                     cached_face_names = []
@@ -414,7 +463,7 @@ def vision_loop():
                 top *= 4; right *= 4; bottom *= 4; left *= 4
 
                 if name == MULTI_LABEL:
-                    color = (0, 165, 255)  # orange
+                    color = (0, 165, 255)
                     label = "MULTIPLE"
                 else:
                     color = (0, 255, 0) if name != UNKNOWN_LABEL else (0, 0, 255)
