@@ -1,184 +1,652 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Registration Kiosk</title>
-    <style>
-        body {
-            background-color: #1a1a1a;
-            color: #0f0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            font-family: 'Courier New', monospace;
-            overflow: hidden;
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Registration Kiosk</title>
+  <style>
+    :root{
+      --bg:#05070b;
+      --panel: rgba(8,12,18,.72);
+      --border: rgba(255,255,255,.12);
+      --glow:#00ffcc;
+      --glowBlue:#00e5ff;
+      --glowPurple:#ff00ff;
+      --glowGreen:#00ff00;
+      --glowOrange:#ffa500;
+      --text:#d9e6ff;
+    }
 
-        /* --- FACE UI --- */
-        .face {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 50px;
-            transition: all 0.3s;
-            margin-bottom: 20px;
-        }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0;
+      height:100vh;
+      display:grid;
+      place-items:center;
+      background:
+        radial-gradient(1200px 800px at 30% 30%, rgba(124,92,255,.14), transparent 60%),
+        radial-gradient(900px 600px at 70% 60%, rgba(0,229,255,.12), transparent 55%),
+        radial-gradient(700px 500px at 50% 90%, rgba(255,255,255,.06), transparent 60%),
+        var(--bg);
+      overflow:hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      color: var(--text);
+    }
 
-        .eyes-row { display: flex; gap: 80px; }
-        .eye {
-            width: 100px;
-            height: 120px;
-            background: #00e5ff;
-            border-radius: 40%;
-            box-shadow: 0 0 20px #00e5ff;
-            transition: all 0.2s;
-        }
+    body:before{
+      content:"";
+      position:fixed; inset:0;
+      background-image:
+        radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,.26) 1px, transparent 2px),
+        radial-gradient(1px 1px at 80% 30%, rgba(255,255,255,.22) 1px, transparent 2px),
+        radial-gradient(1px 1px at 40% 70%, rgba(255,255,255,.18) 1px, transparent 2px),
+        radial-gradient(1px 1px at 70% 80%, rgba(255,255,255,.16) 1px, transparent 2px),
+        radial-gradient(1px 1px at 20% 85%, rgba(255,255,255,.14) 1px, transparent 2px);
+      opacity:.35;
+      pointer-events:none;
+    }
 
-        .mouth {
-            width: 150px;
-            height: 10px;
-            background: #00e5ff;
-            border-radius: 10px;
-            box-shadow: 0 0 10px #00e5ff;
-            transition: all 0.1s;
-        }
+    /* ---- LAYOUT ---- */
+    .kiosk{
+      width:min(860px, 94vw);
+      height:min(720px, 94vh);
+      display:grid;
+      grid-template-columns: 1fr;
+      place-items:center;
+      position:relative;
+    }
 
-        /* STATES */
-        .paused .eye { background: #555; height: 10px; box-shadow: none; } /* Sleep mode */
-        .waiting-input .eye { background: #ff00ff; height: 100px; box-shadow: 0 0 40px #ff00ff; }
-        .success .eye { background: #00ff00; }
-        .success .mouth { background: #00ff00; width: 180px; height: 20px; border-radius: 0 0 100px 100px; }
+    /* status pill */
+    #status-text{
+      position:fixed;
+      bottom: 24px;
+      left: 18px;
+      font-size: 14px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(8,12,18,.55);
+      border: 1px solid rgba(255,255,255,.10);
+      backdrop-filter: blur(10px);
+      z-index:5;
+      max-width: 70vw;
+      overflow:hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
-        /* --- CAMERA & STATUS --- */
-        .camera-feed {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 200px;
-            border: 2px solid #555;
-            border-radius: 10px;
-            opacity: 0.8;
-        }
-        
-        #status-text { margin-top: 20px; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; font-weight: bold; text-align: center;}
+    /* camera overlay */
+    .camera-feed{
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      width: 260px;
+      max-width: 42vw;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.14);
+      box-shadow: 0 18px 40px rgba(0,0,0,.55);
+      opacity:.92;
+      z-index:5;
+    }
 
-        /* --- INPUT FORM --- */
-        #input-area {
-            display: none;
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.95);
-            border: 2px solid #00e5ff;
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 0 50px rgba(0, 229, 255, 0.3);
-            text-align: center;
-            z-index: 100;
-        }
+    /* ---- 3D ROBOT ---- */
+    .stage{
+      position:relative;
+      width:min(520px, 92vw);
+      height:460px;
+      display:grid;
+      place-items:center;
+      perspective:1000px;
+      transform-style:preserve-3d;
+    }
 
-        input {
-            display: block;
-            width: 300px;
-            padding: 15px;
-            margin: 15px 0;
-            background: #222;
-            border: 1px solid #00e5ff;
-            color: #fff;
-            font-size: 18px;
-            outline: none;
-            text-align: center;
-        }
+    .float{
+      position:relative;
+      transform-style:preserve-3d;
+      animation: bob 3.6s ease-in-out infinite;
+    }
+    @keyframes bob{
+      0%,100%{ transform: translateY(0px) rotateX(6deg) rotateY(-10deg); }
+      50%    { transform: translateY(-18px) rotateX(10deg) rotateY(-2deg); }
+    }
 
-        button {
-            padding: 10px 30px;
-            background: #00e5ff;
-            border: none;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 10px;
-        }
-    </style>
+    .halo{
+      position:absolute;
+      width:360px; height:360px;
+      border-radius:50%;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(0,229,255,.16), transparent 60%),
+        radial-gradient(circle at 35% 35%, rgba(124,92,255,.16), transparent 62%);
+      filter: blur(10px);
+      transform: translateZ(-60px);
+      pointer-events:none;
+    }
+
+    .floor-shadow{
+      position:absolute;
+      width:320px; height:90px;
+      border-radius:50%;
+      background: radial-gradient(closest-side, rgba(0,0,0,.55), transparent 70%);
+      filter: blur(8px);
+      transform: translateY(210px) translateZ(-120px);
+      animation: shadow 3.6s ease-in-out infinite;
+      pointer-events:none;
+    }
+    @keyframes shadow{
+      0%,100%{ transform: translateY(210px) translateZ(-120px) scale(1); opacity:.9; }
+      50%    { transform: translateY(210px) translateZ(-120px) scale(.85); opacity:.65; }
+    }
+
+    .robot{
+      position:relative;
+      width: 320px;
+      height: 380px;
+      transform-style:preserve-3d;
+    }
+
+    .head{
+      position:absolute;
+      left:50%;
+      top:0;
+      width: 280px;
+      height: 220px;
+      transform: translateX(-50%) translateZ(40px);
+      border-radius: 46px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.95), rgba(185,194,214,.88));
+      box-shadow:
+        0 30px 80px rgba(0,0,0,.45),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+      overflow:hidden;
+    }
+    .head:before{
+      content:"";
+      position:absolute; inset:-20px;
+      background: radial-gradient(240px 140px at 30% 20%, rgba(255,255,255,.65), transparent 60%);
+      pointer-events:none;
+    }
+
+    .antenna{
+      position:absolute;
+      width: 10px;
+      height: 70px;
+      background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(185,194,214,.85));
+      border-radius: 999px;
+      top: -40px;
+      box-shadow: 0 10px 25px rgba(0,0,0,.25);
+    }
+    .antenna.left{ left: 44px; transform: rotate(-18deg); }
+    .antenna.right{ right: 44px; transform: rotate(18deg); }
+    .antenna:after{
+      content:"";
+      position:absolute;
+      left:50%; top:-14px;
+      width: 20px; height: 20px;
+      transform: translateX(-50%);
+      border-radius:50%;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.8), rgba(124,92,255,.55));
+      box-shadow: 0 0 18px rgba(124,92,255,.55);
+    }
+
+    .face-plate{
+      position:absolute;
+      left:50%;
+      top:52px;
+      width: 230px;
+      height: 120px;
+      transform: translateX(-50%);
+      border-radius: 34px;
+      background: linear-gradient(180deg, rgba(8,12,18,.85), rgba(8,12,18,.72));
+      box-shadow:
+        0 12px 30px rgba(0,0,0,.55),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+    }
+
+    .cheek{
+      position:absolute;
+      width:10px; height:10px;
+      border-radius:50%;
+      top: 76px;
+      background: rgba(0,229,255,.65);
+      box-shadow: 0 0 10px rgba(0,229,255,.6);
+      opacity:.85;
+    }
+    .cheek.left{ left: 18px; }
+    .cheek.right{ right: 18px; }
+
+    .eyes{
+      position:absolute;
+      left:50%;
+      top:26px;
+      transform: translateX(-50%);
+      display:flex;
+      gap: 34px;
+      align-items:center;
+    }
+    .eye{
+      width: 54px;
+      height: 64px;
+      border-radius: 22px;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.65), rgba(0,229,255,.26) 35%, rgba(0,229,255,.08) 70%);
+      box-shadow:
+        0 0 18px rgba(0,229,255,.55),
+        0 0 0 2px rgba(0,229,255,.15) inset;
+      position:relative;
+      overflow:hidden;
+      transition: all .18s ease;
+    }
+    .pupil{
+      position:absolute;
+      width: 18px; height: 18px;
+      border-radius:50%;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.9), rgba(0,229,255,.65) 45%, rgba(0,0,0,.35) 80%);
+      left: 18px; top: 26px;
+      filter: drop-shadow(0 0 6px rgba(0,229,255,.55));
+      transition: transform .12s ease;
+    }
+
+    .mouth{
+      position:absolute;
+      left:50%;
+      bottom:18px;
+      transform: translateX(-50%);
+      width: 120px;
+      height: 12px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(0,229,255,.15), rgba(0,229,255,.55), rgba(0,229,255,.15));
+      box-shadow: 0 0 14px rgba(0,229,255,.55);
+      transition: all .15s ease;
+    }
+
+    .body{
+      position:absolute;
+      left:50%;
+      top: 200px;
+      width: 240px;
+      height: 170px;
+      transform: translateX(-50%) translateZ(20px);
+      border-radius: 44px;
+      background: linear-gradient(145deg, rgba(255,255,255,.92), rgba(185,194,214,.84));
+      box-shadow:
+        0 26px 70px rgba(0,0,0,.40),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+      overflow:hidden;
+    }
+
+    .chest{
+      position:absolute;
+      left:50%;
+      top:42px;
+      transform: translateX(-50%);
+      width: 170px;
+      height: 80px;
+      border-radius: 26px;
+      background: linear-gradient(180deg, rgba(8,12,18,.82), rgba(8,12,18,.72));
+      box-shadow:
+        0 12px 28px rgba(0,0,0,.55),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+    }
+
+    .core{
+      position:absolute;
+      left:50%;
+      top:50%;
+      transform: translate(-50%, -50%);
+      width: 44px; height: 44px;
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 35% 35%, rgba(255,255,255,.85), rgba(0,229,255,.35) 40%, rgba(0,229,255,.1) 75%);
+      box-shadow:
+        0 0 24px rgba(0,229,255,.55),
+        0 0 0 2px rgba(0,229,255,.14) inset;
+      animation: corePulse 1.3s ease-in-out infinite alternate;
+    }
+    @keyframes corePulse{
+      from { transform: translate(-50%, -50%) scale(1); }
+      to   { transform: translate(-50%, -50%) scale(1.06); }
+    }
+
+    .arm{
+      position:absolute;
+      top: 245px;
+      width: 70px;
+      height: 90px;
+      border-radius: 26px;
+      background: linear-gradient(145deg, rgba(255,255,255,.9), rgba(185,194,214,.82));
+      box-shadow: 0 18px 45px rgba(0,0,0,.35);
+      transform-style:preserve-3d;
+    }
+    .arm.left{ left: 6px; transform: translateZ(10px) rotateY(22deg); }
+    .arm.right{ right: 6px; transform: translateZ(10px) rotateY(-22deg); }
+
+    .hand{
+      position:absolute;
+      left:50%;
+      bottom:-14px;
+      transform: translateX(-50%);
+      width: 56px;
+      height: 28px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(8,12,18,.78), rgba(8,12,18,.62));
+      box-shadow: 0 10px 22px rgba(0,0,0,.45);
+    }
+
+    /* ---- INPUT MODAL ---- */
+    #input-area{
+      display:none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(520px, 92vw);
+      background: rgba(0, 0, 0, 0.92);
+      border: 1px solid rgba(0,229,255,.35);
+      padding: 28px;
+      border-radius: 18px;
+      box-shadow:
+        0 30px 80px rgba(0,0,0,.75),
+        0 0 60px rgba(0,229,255,.18);
+      backdrop-filter: blur(10px);
+      text-align:center;
+      z-index: 100;
+    }
+
+    #input-area h2{
+      color: rgba(0,229,255,.95);
+      margin: 0 0 16px 0;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      font-size: 18px;
+    }
+
+    .hint{
+      margin: 0 0 18px 0;
+      color: rgba(217,230,255,.75);
+      font-size: 12px;
+      letter-spacing: 1px;
+      line-height: 1.35;
+    }
+
+    input{
+      display:block;
+      width:100%;
+      padding: 14px 14px;
+      margin: 12px 0;
+      background: rgba(12,16,24,.75);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 14px;
+      color: #fff;
+      font-size: 16px;
+      outline:none;
+      text-align:center;
+      box-shadow: 0 0 0 1px rgba(0,229,255,.06) inset;
+    }
+    input:focus{
+      border-color: rgba(0,229,255,.55);
+      box-shadow: 0 0 0 3px rgba(0,229,255,.12);
+    }
+
+    .row{
+      display:flex;
+      gap: 12px;
+      justify-content:center;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    button{
+      padding: 12px 18px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(0,229,255,.95), rgba(0,229,255,.65));
+      border: none;
+      color: #001014;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 1px;
+      cursor:pointer;
+      min-width: 160px;
+      box-shadow: 0 18px 35px rgba(0,0,0,.45);
+    }
+    button:active{ transform: translateY(1px); }
+
+    .ghost{
+      background: rgba(255,255,255,.06);
+      color: rgba(217,230,255,.92);
+      border: 1px solid rgba(255,255,255,.10);
+    }
+
+    /* ---- ROBOT STATES FROM /status_feed ---- */
+    #robot-root.state-waiting .eye,
+    #robot-root.state-ready .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.65), rgba(0,229,255,.26) 35%, rgba(0,229,255,.08) 70%);
+      box-shadow: 0 0 18px rgba(0,229,255,.55);
+    }
+
+    #robot-root.state-paused .eye{
+      background: rgba(120,120,120,.25);
+      box-shadow: none;
+      transform: scaleY(.12);
+    }
+    #robot-root.state-paused .mouth{
+      opacity:.25;
+      box-shadow:none;
+    }
+
+    #robot-root.state-waiting-input .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.70), rgba(255,0,255,.30) 40%, rgba(255,0,255,.10) 75%);
+      box-shadow: 0 0 26px rgba(255,0,255,.55);
+    }
+    #robot-root.state-waiting-input .mouth{
+      width: 84px;
+      background: linear-gradient(90deg, rgba(255,0,255,.15), rgba(255,0,255,.62), rgba(255,0,255,.15));
+      box-shadow: 0 0 18px rgba(255,0,255,.62);
+    }
+
+    #robot-root.state-success .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.72), rgba(0,255,0,.28) 40%, rgba(0,255,0,.10) 75%);
+      box-shadow: 0 0 28px rgba(0,255,0,.55);
+    }
+    #robot-root.state-success .mouth{
+      width: 170px;
+      height: 22px;
+      border-radius: 0 0 140px 140px;
+      background: linear-gradient(90deg, rgba(0,255,0,.15), rgba(0,255,0,.62), rgba(0,255,0,.15));
+      box-shadow: 0 0 20px rgba(0,255,0,.62);
+    }
+
+    #robot-root.state-error .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.70), rgba(255,165,0,.30) 40%, rgba(255,165,0,.10) 75%);
+      box-shadow: 0 0 26px rgba(255,165,0,.55);
+    }
+    #robot-root.state-error .mouth{
+      width: 110px;
+      background: linear-gradient(90deg, rgba(255,165,0,.15), rgba(255,165,0,.62), rgba(255,165,0,.15));
+      box-shadow: 0 0 18px rgba(255,165,0,.62);
+    }
+
+  </style>
 </head>
 <body>
 
-    <div id="face-container" class="face">
-        <div class="eyes-row">
-            <div class="eye left"></div>
-            <div class="eye right"></div>
+  <div class="kiosk">
+    <div class="stage">
+      <div class="float" id="robot-root">
+        <div class="halo"></div>
+        <div class="floor-shadow"></div>
+
+        <div class="robot">
+          <div class="head">
+            <div class="antenna left"></div>
+            <div class="antenna right"></div>
+
+            <div class="face-plate">
+              <div class="cheek left"></div>
+              <div class="cheek right"></div>
+
+              <div class="eyes">
+                <div class="eye"><div class="pupil" id="p1"></div></div>
+                <div class="eye"><div class="pupil" id="p2"></div></div>
+              </div>
+
+              <div class="mouth" id="mouth"></div>
+            </div>
+          </div>
+
+          <div class="arm left"><div class="hand"></div></div>
+          <div class="arm right"><div class="hand"></div></div>
+
+          <div class="body">
+            <div class="chest">
+              <div class="core"></div>
+            </div>
+          </div>
         </div>
-        <div class="mouth"></div>
+      </div>
     </div>
+  </div>
 
-    <div id="status-text">SYSTEM READY</div>
+  <div id="status-text">SYSTEM READY</div>
 
-    <div id="input-area">
-        <h2 style="color: #00e5ff; margin:0 0 20px 0;">REGISTRATION</h2>
-        <input type="text" id="student-name" placeholder="Full Name" autocomplete="off">
-        <input type="text" id="student-id" placeholder="Student ID" autocomplete="off">
-        <button onclick="submitData()">REGISTER</button>
+  <!-- INPUT MODAL -->
+  <div id="input-area">
+    <h2>Registration</h2>
+    <p class="hint">Enter full name and student ID. Press ENTER on the ID field to submit.</p>
+    <input type="text" id="student-name" placeholder="Full Name" autocomplete="off" />
+    <input type="text" id="student-id" placeholder="Student ID" autocomplete="off" />
+    <div class="row">
+      <button id="btn-register" onclick="submitData()">Register</button>
+      <button class="ghost" onclick="closeModal()">Cancel</button>
     </div>
+  </div>
 
-    <img src="/video_feed" class="camera-feed" alt="Vision">
+  <!-- Live Camera Stream -->
+  <img src="/video_feed" class="camera-feed" alt="Vision" />
 
-    <script>
-        const face = document.getElementById('face-container');
-        const text = document.getElementById('status-text');
-        const inputArea = document.getElementById('input-area');
-        const nameInput = document.getElementById('student-name');
-        const idInput = document.getElementById('student-id');
-        let isInputVisible = false;
+  <script>
+    const root = document.getElementById("robot-root");
+    const statusText = document.getElementById("status-text");
+    const pupils = [document.getElementById("p1"), document.getElementById("p2")];
 
-        const evtSource = new EventSource("/status_feed");
-        
-        evtSource.onmessage = function(event) {
-            const state = event.data;
-            text.innerText = state;
-            face.className = 'face';
+    const inputArea = document.getElementById("input-area");
+    const nameInput = document.getElementById("student-name");
+    const idInput = document.getElementById("student-id");
+    const btnRegister = document.getElementById("btn-register");
 
-            // Show Input Box
-            if (state.includes("INPUT REQUIRED") && !isInputVisible) {
-                isInputVisible = true;
-                inputArea.style.display = "block";
-                face.classList.add('waiting-input');
-                nameInput.value = "";
-                idInput.value = "";
-                nameInput.focus();
-            }
+    let isInputVisible = false;
+    let isSubmitting = false;
 
-            // Hide Input Box
-            if (!state.includes("INPUT REQUIRED") && isInputVisible) {
-                isInputVisible = false;
-                inputArea.style.display = "none";
-            }
-            
-            if (state.includes("REGISTERED")) face.classList.add('success');
-            if (state.includes("CAPTURED")) face.classList.add('paused');
-        };
+    function rand(min, max){ return Math.random() * (max - min) + min; }
 
-        function submitData() {
-            const name = nameInput.value;
-            const studentId = idInput.value;
-            if(!name || !studentId) { alert("Both fields required"); return; }
+    // Cute idle eye movement
+    setInterval(() => {
+      const x = rand(-8, 8);
+      const y = rand(-6, 6);
+      pupils.forEach(p => p.style.transform = `translate(${x}px, ${y}px)`);
+    }, 700);
 
-            fetch('/register_student', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name, id: studentId })
-            }).then(() => { 
-                inputArea.style.display = "none"; 
-            });
-        }
-        
-        idInput.addEventListener("keypress", function(event) {
-            if (event.key === "Enter") submitData();
+    // Random blink when idle
+    setInterval(() => {
+      const cls = root.className || "";
+      if (!cls.includes("state-")) {
+        const eyes = document.querySelectorAll(".eye");
+        eyes.forEach(e => e.style.transform = "scaleY(0.12)");
+        setTimeout(() => eyes.forEach(e => e.style.transform = ""), 160);
+      }
+    }, 3800);
+
+    function setStateFromText(state){
+      const s = (state || "").toUpperCase();
+
+      root.classList.remove("state-ready","state-waiting","state-paused","state-waiting-input","state-success","state-error");
+
+      // default mapping
+      if (s.includes("SYSTEM READY") || s.includes("WAITING")) root.classList.add("state-waiting");
+      if (s.includes("CAPTURED")) root.classList.add("state-paused");
+      if (s.includes("INPUT REQUIRED")) root.classList.add("state-waiting-input");
+      if (s.includes("REGISTRATION COMPLETE") || s.includes("SUCCESS")) root.classList.add("state-success");
+
+      // errors / blocks
+      if (s.includes("ERROR") || s.includes("FAILED") || s.includes("BLOCKED") || s.includes("TIMEOUT") || s.includes("INVALID")) {
+        root.classList.add("state-error");
+      }
+    }
+
+    function openModal(){
+      if (isInputVisible) return;
+      isInputVisible = true;
+      inputArea.style.display = "block";
+      nameInput.value = "";
+      idInput.value = "";
+      nameInput.focus();
+    }
+
+    function closeModal(){
+      isInputVisible = false;
+      inputArea.style.display = "none";
+      isSubmitting = false;
+      btnRegister.disabled = false;
+      btnRegister.textContent = "Register";
+    }
+
+    async function submitData(){
+      const name = nameInput.value.trim();
+      const studentId = idInput.value.trim();
+
+      if (!name || !studentId) { alert("Both fields required"); return; }
+      if (isSubmitting) return;
+
+      isSubmitting = true;
+      btnRegister.disabled = true;
+      btnRegister.textContent = "Submitting...";
+
+      try{
+        const res = await fetch("/register_student", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, id: studentId })
         });
-    </script>
+
+        // if backend says "busy" (409), keep modal open
+        if (!res.ok){
+          let msg = "Submit failed.";
+          try{
+            const j = await res.json();
+            msg = j.message || msg;
+          }catch(e){}
+          alert(msg);
+          isSubmitting = false;
+          btnRegister.disabled = false;
+          btnRegister.textContent = "Register";
+          return;
+        }
+
+        // success -> hide modal, await backend status transition
+        closeModal();
+      }catch(e){
+        alert("Network error.");
+        isSubmitting = false;
+        btnRegister.disabled = false;
+        btnRegister.textContent = "Register";
+      }
+    }
+
+    idInput.addEventListener("keypress", function(event) {
+      if (event.key === "Enter") submitData();
+    });
+
+    // Listen for state updates from Python
+    const evtSource = new EventSource("/status_feed");
+    evtSource.onmessage = function(event){
+      const state = event.data || "SYSTEM READY";
+      statusText.textContent = state;
+
+      setStateFromText(state);
+
+      // Show/Hide Input Box
+      if (state.includes("INPUT REQUIRED") && !isInputVisible) openModal();
+      if (!state.includes("INPUT REQUIRED") && isInputVisible) closeModal();
+    };
+  </script>
 </body>
 </html>
