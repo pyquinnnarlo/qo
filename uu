@@ -1,12 +1,10 @@
-# ======================
-# ENTRIES APP (UPDATED)
+# =========================
+# REGISTRATION APP (UPDATED)
 # Multi-Face Blocking Added
-# Works With Updated Registration DB
-# ======================
+# =========================
 
 import threading
 import cv2
-import speech_recognition as sr
 import os
 import time
 import json
@@ -15,26 +13,8 @@ import numpy as np
 import logging
 import hashlib
 import subprocess
-from flask import Flask, render_template, Response
+from flask import Flask, render_template, Response, request, jsonify
 from gtts import gTTS
-from ctypes import *
-from contextlib import contextmanager
-
-# --- ALSA ERROR SUPPRESSION ---
-ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
-def py_error_handler(filename, line, function, err, fmt):
-    pass
-c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
-
-@contextmanager
-def no_alsa_errors():
-    try:
-        asound = cdll.LoadLibrary('libasound.so')
-        asound.snd_lib_error_set_handler(c_error_handler)
-        yield
-        asound.snd_lib_error_set_handler(None)
-    except:
-        yield
 
 # --- CONFIGURATION ---
 app = Flask(__name__)
@@ -42,23 +22,28 @@ log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 UNKNOWN_LABEL = "Unknown"
-MULTI_LABEL = "MULTIPLE"
-
-MIC_INDEX = None
-
-# Thread safety
-frame_lock = threading.Lock()
-db_lock = threading.Lock()
+MULTI_LABEL = "MULTIPLE"  # internal label for multi-face state
 
 # Global Variables
 video_frame = None
+frame_lock = threading.Lock()  # Mutex for frame access
+db_lock = threading.Lock()     # Mutex for students.json + known_face_* updates
+
 known_face_encodings = []
-known_face_names = []   # normalized name_key
+known_face_names = []
+
 current_detected_name = None
-current_face_count = 0
+current_face_location = None          # single-face best location
+current_face_locations = []           # all face boxes
+current_face_count = 0                # number of faces
 current_status = "SYSTEM READY"
 
-# --- DB HELPERS (MATCH UPDATED REGISTRATION CODE) ---
+# Flags for Thread Safety
+scan_active = True
+pending_registration_data = None
+registration_frame_buffer = None
+
+# --- DB HELPERS ---
 def _read_students_db(json_file="students.json"):
     if not os.path.exists(json_file):
         return {}
@@ -69,14 +54,13 @@ def _read_students_db(json_file="students.json"):
     except:
         return {}
 
-def _normalize_name_key(name: str) -> str:
-    return str(name).strip().lower().replace(" ", "_")
+def _sanitize_id(student_id: str) -> str:
+    sid = str(student_id).strip()
+    sid = "".join(ch for ch in sid if ch.isalnum() or ch in ("-", "_"))
+    return sid or "UNKNOWN_ID"
 
+# --- DATABASE ---
 def load_student_data():
-    """
-    Loads face encodings from student_pics/Name__StudentID.jpeg
-    Stores recognition label as normalized name_key.
-    """
     print(" [DB] Loading Student Faces...")
     global known_face_encodings, known_face_names
     known_face_encodings = []
@@ -85,79 +69,133 @@ def load_student_data():
     path = "student_pics"
     if not os.path.exists(path):
         os.makedirs(path)
-        print(" [DB] 'student_pics' folder created. Add images there.")
-        return
 
     for file in os.listdir(path):
         if file.lower().endswith((".jpg", ".png", ".jpeg")):
             try:
                 img = face_recognition.load_image_file(os.path.join(path, file))
-                encodings = face_recognition.face_encodings(img)
-
-                if encodings:
+                encs = face_recognition.face_encodings(img)
+                if encs:
                     base = os.path.splitext(file)[0]
-                    name_part = base.split("__")[0]
-                    name_key = _normalize_name_key(name_part)
+                    display_name = base.split("__")[0]  # Name__ID -> Name
+                    known_face_encodings.append(encs[0])
+                    known_face_names.append(display_name)
+                    print(f"   + Loaded: {file}")
+            except:
+                pass
 
-                    known_face_encodings.append(encodings[0])
-                    known_face_names.append(name_key)
-                    print(f"   + Loaded: {name_key}")
-                else:
-                    print(f"   - Warning: No face found in {file}")
-            except Exception as e:
-                print(f"   - Error loading {file}: {e}")
-
-    print(f" [DB] System Ready. Known students: {len(known_face_names)}")
-
-def check_registration_by_face_name(face_name_key: str):
+def save_new_student(name, student_id, frame):
     """
-    students.json is keyed by student_id in updated registration code.
-    For entries, we validate by matching record['name_key'].
+    Prevent duplicate registration by:
+      1) student_id already exists in students.json
+      2) captured face already matches an existing encoding
+      3) multi-face / no-face capture is blocked
+    Returns: (ok: bool, message: str)
     """
     try:
+        if frame is None:
+            return False, "Camera frame missing."
+
+        clean_name = name.strip().replace(" ", "_")
+        sid_clean = _sanitize_id(student_id)
+
+        # Face encoding from captured frame (convert BGR -> RGB)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        locs = face_recognition.face_locations(rgb_frame)
+        if len(locs) != 1:
+            if len(locs) == 0:
+                return False, "No face found. Try again."
+            return False, "Multiple faces detected. One student at a time."
+
+        new_encs = face_recognition.face_encodings(rgb_frame, locs)
+        if not new_encs:
+            return False, "Face not clear. Try again."
+        new_enc = new_encs[0]
+
         with db_lock:
-            db = _read_students_db("students.json")
+            json_file = "students.json"
+            db = _read_students_db(json_file)
 
-        if not db:
-            return None
+            # 1) Duplicate ID check
+            if sid_clean in db:
+                existing_name = db[sid_clean].get("full_name") or db[sid_clean].get("name_key") or "student"
+                return False, f"Duplicate blocked: ID already registered for {existing_name}."
 
-        target = _normalize_name_key(face_name_key)
-        for _, rec in db.items():
-            if not isinstance(rec, dict):
-                continue
-            if _normalize_name_key(rec.get("name_key", "")) == target:
-                return bool(rec.get("registered", False))
+            # 2) Duplicate face check
+            if known_face_encodings:
+                matches = face_recognition.compare_faces(known_face_encodings, new_enc, tolerance=0.45)
+                if True in matches:
+                    idx = matches.index(True)
+                    existing_label = known_face_names[idx] if idx < len(known_face_names) else "student"
+                    return False, f"Duplicate blocked: Face already registered as {existing_label.replace('_',' ')}."
 
-        return None
+            if not os.path.exists("student_pics"):
+                os.makedirs("student_pics")
+
+            # Save as Name__ID
+            img_path = f"student_pics/{clean_name}__{sid_clean}.jpeg"
+            cv2.imwrite(img_path, frame)
+
+            # DB keyed by student_id
+            db[sid_clean] = {
+                "full_name": name,
+                "student_id": sid_clean,
+                "name_key": clean_name,
+                "image_path": img_path,
+                "registered": True,
+                "timestamp": time.time()
+            }
+
+            with open(json_file, "w") as f:
+                json.dump(db, f, indent=4)
+
+            known_face_encodings.append(new_enc)
+            known_face_names.append(clean_name)
+
+        return True, "Registration saved."
     except Exception as e:
-        print(f" [DB ERROR] {e}")
-        return None
+        print(f" [ERROR] Save failed: {e}")
+        return False, "Save failed due to an internal error."
 
-# --- AUDIO FUNCTIONS ---
-def update_status(status):
-    global current_status
-    current_status = status
+# --- UTILS ---
+def get_current_frame():
+    with frame_lock:
+        if video_frame is not None:
+            return video_frame.copy()
+    return None
+
+def check_lighting(frame, face_loc):
+    if frame is None or face_loc is None:
+        return False, 0
+    try:
+        top, right, bottom, left = face_loc
+        h, w, _ = frame.shape
+        top = max(0, top); left = max(0, left)
+        bottom = min(h, bottom); right = min(w, right)
+
+        face_roi = frame[top:bottom, left:right]
+        if face_roi.size == 0:
+            return False, 0
+
+        gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        avg_brightness = np.mean(gray)
+        return avg_brightness > 50, avg_brightness
+    except:
+        return False, 0
 
 def speak(text):
     global current_status
     print(f"Robot: {text}")
-
-    prev_status = current_status
-    update_status(f"SPEAKING: {text}")
-
     filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
     file_path = f"audio_cache/{filename}"
 
     if not os.path.exists("audio_cache"):
         os.makedirs("audio_cache")
-
     if not os.path.exists(file_path):
         try:
             tts = gTTS(text=text, lang='en', tld='co.uk')
             tts.save(file_path)
-        except Exception as e:
-            print(f" [ERROR] Could not generate TTS: {e}")
-            update_status(prev_status)
+        except:
             return
 
     try:
@@ -165,94 +203,71 @@ def speak(text):
     except Exception:
         pass
 
-    update_status(prev_status)
+def update_status(status):
+    global current_status
+    current_status = status
 
-def listen_for_name():
-    """
-    Voice fallback (not reliable for verification unless name_key exists in DB).
-    Returns normalized name_key or None.
-    """
-    update_status("LISTENING")
-    speak("Face not recognized. Please state your name.")
-
-    r = sr.Recognizer()
-
-    with no_alsa_errors():
-        try:
-            mic = sr.Microphone(device_index=MIC_INDEX)
-            with mic as source:
-                r.adjust_for_ambient_noise(source, duration=0.5)
-                print(" [AUDIO] Listening...")
-                audio = r.listen(source, timeout=4, phrase_time_limit=4)
-
-                update_status("THINKING")
-                spoken = r.recognize_sphinx(audio).lower()
-                print(f" [AUDIO] Heard: {spoken}")
-                return _normalize_name_key(spoken)
-        except sr.WaitTimeoutError:
-            print(" [AUDIO] Timeout.")
-            return None
-        except sr.UnknownValueError:
-            speak("I did not understand.")
-            return None
-        except Exception as e:
-            print(f" [AUDIO] Error: {e}")
-            return None
-        finally:
-            update_status("IDLE")
-
-# --- WEB SERVER ---
+# --- FLASK ---
 @app.route('/')
 def index():
-    return render_template('index.html')
-
-def generate_frames():
-    global video_frame
-    while True:
-        with frame_lock:
-            frame = video_frame.copy() if video_frame is not None else None
-
-        if frame is not None:
-            try:
-                ret, buffer = cv2.imencode('.jpg', frame)
-                if ret:
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            except:
-                pass
-
-        time.sleep(0.04)
+    return render_template('register.html')
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    def generate():
+        while True:
+            with frame_lock:
+                frame = video_frame.copy() if video_frame is not None else None
+
+            if frame is not None:
+                ret, buf = cv2.imencode('.jpg', frame)
+                if ret:
+                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
+
+            time.sleep(0.05)
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/status_feed')
 def status_feed():
     def generate():
         while True:
             yield f"data: {current_status}\n\n"
-            time.sleep(0.5)
+            time.sleep(0.2)
     return Response(generate(), mimetype="text/event-stream")
 
-# --- LOGIC LOOP ---
-def exam_logic_loop():
-    global current_detected_name, current_face_count
+@app.route('/register_student', methods=['POST'])
+def register_student():
+    global pending_registration_data
+    data = request.json or {}
 
-    time.sleep(3)
+    if not data.get('name') or not data.get('id'):
+        return jsonify({"status": "error"}), 400
+
+    if pending_registration_data is not None:
+        return jsonify({"status": "busy", "message": "Registration already pending."}), 409
+
+    pending_registration_data = data
+    return jsonify({"status": "received"}), 200
+
+# --- LOGIC LOOP ---
+def logic_loop():
+    global current_detected_name, pending_registration_data, registration_frame_buffer
+    global current_face_location, current_face_count, scan_active
+
+    time.sleep(2)
     speak("System Online.")
 
-    last_processed = None
-    last_processed_time = 0
     last_multi_warn = 0
 
     while True:
-        update_status("WAITING FOR FACE")
+        update_status("WAITING FOR STUDENT")
+        scan_active = True
 
         if current_detected_name is None:
-            time.sleep(0.4)
+            time.sleep(0.5)
             continue
 
-        # MULTI-FACE BLOCK
+        # MULTI-FACE BLOCK (GLOBAL)
         if current_detected_name == MULTI_LABEL or current_face_count > 1:
             update_status("MULTIPLE FACES - ONE STUDENT ONLY")
             if time.time() - last_multi_warn > 6:
@@ -262,83 +277,120 @@ def exam_logic_loop():
                 time.sleep(0.5)
             continue
 
-        # Debounce
-        if current_detected_name == last_processed and (time.time() - last_processed_time) < 8:
-            time.sleep(0.5)
+        detected = current_detected_name
+
+        # 1) KNOWN STUDENT
+        if detected != UNKNOWN_LABEL:
+            update_status(f"WELCOME BACK {detected}")
+            speak(f"Hello {detected.replace('_', ' ')}.")
+            time.sleep(1)
+            while current_detected_name is not None:
+                time.sleep(0.5)
             continue
 
-        update_status("INSTRUCTING STUDENT")
-        speak("Hi. Look directly at the camera. Remove anything covering your face.")
+        # 2) NEW STUDENT
+        update_status("NEW STUDENT DETECTED")
+        speak("Hello. I do not recognize you.")
+        time.sleep(0.5)
+
+        # Ensure exactly 1 face before instructions/capture
+        if current_face_count != 1:
+            update_status("ONE FACE REQUIRED")
+            speak("One student only. Please make sure only one face is in view.")
+            while current_face_count != 1:
+                time.sleep(0.5)
+            continue
+
+        update_status("PREPARING FOR PHOTO")
+        speak("Please look directly at the camera.")
+        time.sleep(0.5)
+        speak("Please remove any hats, glasses, or hair covering your face.")
         time.sleep(3)
 
-        if current_detected_name is None:
-            speak("Face lost. Process reset.")
+        # Multi-face check again right before capture
+        if current_face_count != 1:
+            update_status("MULTIPLE FACES - CAPTURE BLOCKED")
+            speak("Multiple faces detected. Capture blocked. One student at a time.")
             continue
 
-        # Multi-face check again after instructions
-        if current_face_count > 1 or current_detected_name == MULTI_LABEL:
-            update_status("MULTIPLE FACES - BLOCKED")
-            speak("Multiple faces detected. One student at a time.")
-            continue
-
-        name_key = current_detected_name  # already normalized in vision loop
-        update_status(f"PROCESSING: {name_key}")
-
-        # Unknown -> voice fallback (still validates against DB by name_key)
-        if name_key == UNKNOWN_LABEL:
-            spoken_name_key = listen_for_name()
-            if spoken_name_key:
-                speak(f"I heard {spoken_name_key.replace('_', ' ')}.")
-                name_key = spoken_name_key
-            else:
-                current_detected_name = None
+        # Lighting check uses single-face location
+        frame_snapshot = get_current_frame()
+        if frame_snapshot is not None and current_face_location is not None:
+            is_bright, _ = check_lighting(frame_snapshot, current_face_location)
+            if not is_bright:
+                update_status("LIGHTING TOO DARK")
+                speak("The lighting is too dark. Please find better light.")
+                time.sleep(3)
                 continue
 
-        is_registered = check_registration_by_face_name(name_key)
+        speak("Hold still.")
+        time.sleep(1.0)
 
-        if is_registered is True:
-            speak(f"Hello {name_key.replace('_', ' ')}.")
-            time.sleep(0.2)
-            speak("You are registered.")
+        registration_frame_buffer = get_current_frame()
+        if registration_frame_buffer is None:
+            speak("Camera error.")
+            continue
 
-            update_status("READING RULES")
-            speak("Attention. Please listen to the exam rules.")
-            time.sleep(0.2)
-            speak("No phones or smart watches are allowed in the exam hall or during the exam.")
-            time.sleep(0.2)
-            speak("Failure to follow these rules will result in the dismissal of the test.")
-            time.sleep(0.2)
+        # HARD BLOCK: confirm exactly 1 face in the captured frame
+        rgb_cap = cv2.cvtColor(registration_frame_buffer, cv2.COLOR_BGR2RGB)
+        cap_locs = face_recognition.face_locations(rgb_cap)
+        if len(cap_locs) != 1:
+            update_status("CAPTURE INVALID")
+            if len(cap_locs) == 0:
+                speak("No face found. Please try again.")
+            else:
+                speak("Multiple faces detected. One student at a time.")
+            registration_frame_buffer = None
+            continue
 
-            speak("You may enter now.")
+        speak("Face captured.")
+        update_status("CAPTURED - PAUSING VISION")
 
-            last_processed = name_key
-            last_processed_time = time.time()
-
-            while current_detected_name == name_key:
-                time.sleep(1)
-
-            speak("Next student.")
-
-        elif is_registered is False:
-            speak(f"Alert. {name_key.replace('_', ' ')}, you are not registered.")
-            last_processed = name_key
-            last_processed_time = time.time()
-            while current_detected_name == name_key:
-                time.sleep(1)
-
-        else:
-            speak(f"I cannot find registration for {name_key.replace('_', ' ')}.")
-            last_processed = name_key
-            last_processed_time = time.time()
-            time.sleep(2)
-
+        scan_active = False
         time.sleep(0.5)
+
+        speak("Please enter your Name and ID on the screen.")
+        update_status("INPUT REQUIRED")
+
+        timer = 0
+        while pending_registration_data is None:
+            time.sleep(0.5)
+            timer += 1
+            if timer > 120:
+                break
+
+        if pending_registration_data:
+            name = pending_registration_data['name']
+            sid = pending_registration_data['id']
+
+            update_status("SAVING...")
+            ok, msg = save_new_student(name, sid, registration_frame_buffer)
+            if ok:
+                update_status("REGISTRATION COMPLETE")
+                speak("Registration successful. Thank you.")
+            else:
+                update_status("REGISTRATION BLOCKED")
+                speak(msg)
+
+            pending_registration_data = None
+            registration_frame_buffer = None
+
+            scan_active = True
+            speak("Please step aside.")
+            while current_detected_name is not None:
+                time.sleep(1)
+        else:
+            update_status("TIMEOUT")
+            speak("Registration timed out. Resetting.")
+            pending_registration_data = None
+            registration_frame_buffer = None
+            scan_active = True
+            time.sleep(2)
 
 # --- VISION LOOP ---
 def vision_loop():
-    global video_frame, current_detected_name, current_face_count
-
-    print(" [VISION] Starting Camera...")
+    global video_frame, current_detected_name
+    global current_face_location, current_face_locations, current_face_count, scan_active
 
     pipelines = [
         "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
@@ -349,91 +401,67 @@ def vision_loop():
     for pipeline in pipelines:
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER) if isinstance(pipeline, str) else cv2.VideoCapture(pipeline)
         if cap.isOpened():
-            print(f" [VISION] Camera opened with: {pipeline}")
             break
 
-    if not cap or not cap.isOpened():
-        print(" [ERROR] Could not open any camera.")
-        return
-
     frame_count = 0
-    cached_face_locations = []
-    cached_face_names = []
 
     while True:
-        try:
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.1)
-                continue
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.1)
+            continue
 
-            frame_count += 1
+        frame_count += 1
 
-            if frame_count % 5 == 0:
-                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        if scan_active and frame_count % 5 == 0:
+            small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
-                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+            locs = face_recognition.face_locations(rgb)
+            current_face_count = len(locs)
 
-                current_face_count = len(cached_face_locations)
+            # scale locs to full size for drawing/lighting
+            scaled_locs = [(t*4, r*4, b*4, l*4) for (t, r, b, l) in locs]
+            current_face_locations = scaled_locs
+            current_face_location = scaled_locs[0] if scaled_locs else None
 
-                cached_face_names = []
-                detected_name = None
+            # multi-face -> block at logic layer
+            if current_face_count > 1:
+                current_detected_name = MULTI_LABEL
+            elif current_face_count == 1:
+                encs = face_recognition.face_encodings(rgb, locs)
+                name = UNKNOWN_LABEL
+                if encs and known_face_encodings:
+                    enc = encs[0]
+                    matches = face_recognition.compare_faces(known_face_encodings, enc, tolerance=0.5)
+                    dists = face_recognition.face_distance(known_face_encodings, enc)
+                    if len(dists) > 0:
+                        best = np.argmin(dists)
+                        if matches[best]:
+                            name = known_face_names[best]
+                current_detected_name = name
+            else:
+                current_detected_name = None
 
-                # Multi-face state
-                if current_face_count > 1:
-                    detected_name = MULTI_LABEL
-                    cached_face_names = [MULTI_LABEL] * current_face_count
-
-                # Single face -> recognize
-                elif current_face_count == 1 and face_encodings:
-                    face_encoding = face_encodings[0]
-                    name = UNKNOWN_LABEL
-
-                    if known_face_encodings:
-                        matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
-                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                        if len(face_distances) > 0:
-                            best = np.argmin(face_distances)
-                            if matches[best]:
-                                name = known_face_names[best]
-
-                    detected_name = name
-                    cached_face_names = [name]
-
-                # No face
-                else:
-                    detected_name = None
-                    cached_face_names = []
-
-                current_detected_name = detected_name
-
-            # Draw rectangles
-            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
-                top *= 4; right *= 4; bottom *= 4; left *= 4
-
-                if name == MULTI_LABEL:
-                    color = (0, 165, 255)  # orange
+        # Draw all boxes (even when scan paused; reuse last)
+        if current_face_locations:
+            for (top, right, bottom, left) in current_face_locations:
+                if current_face_count > 1 or current_detected_name == MULTI_LABEL:
+                    color = (0, 165, 255)  # orange for multi
                     label = "MULTIPLE"
                 else:
-                    color = (0, 255, 0) if name != UNKNOWN_LABEL else (0, 0, 255)
-                    label = str(name)
+                    color = (0, 255, 0) if current_detected_name != UNKNOWN_LABEL else (0, 0, 255)
+                    label = str(current_detected_name) if current_detected_name else ""
 
                 cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
-                cv2.putText(frame, label, (left + 6, bottom - 6),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+                if label:
+                    cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-            with frame_lock:
-                video_frame = frame.copy()
-
-        except Exception as e:
-            print(f" [VISION WARNING] {e}")
-            time.sleep(0.1)
+        with frame_lock:
+            video_frame = frame.copy()
 
 if __name__ == "__main__":
     load_student_data()
     threading.Thread(target=vision_loop, daemon=True).start()
-    threading.Thread(target=exam_logic_loop, daemon=True).start()
+    threading.Thread(target=logic_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
