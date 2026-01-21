@@ -1,3 +1,9 @@
+# ======================
+# ENTRIES APP (UPDATED)
+# Multi-Face Blocking Added
+# Works With Updated Registration DB
+# ======================
+
 import threading
 import cv2
 import speech_recognition as sr
@@ -35,6 +41,9 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
+UNKNOWN_LABEL = "Unknown"
+MULTI_LABEL = "MULTIPLE"
+
 MIC_INDEX = None
 
 # Thread safety
@@ -44,8 +53,9 @@ db_lock = threading.Lock()
 # Global Variables
 video_frame = None
 known_face_encodings = []
-known_face_names = []  # stores clean_name (name_key)
+known_face_names = []   # normalized name_key
 current_detected_name = None
+current_face_count = 0
 current_status = "SYSTEM READY"
 
 # --- DB HELPERS (MATCH UPDATED REGISTRATION CODE) ---
@@ -64,9 +74,8 @@ def _normalize_name_key(name: str) -> str:
 
 def load_student_data():
     """
-    Loads face encodings from student_pics/* and uses the filename convention:
-      Name__StudentID.jpeg
-    The recognition label used is the Name part (name_key).
+    Loads face encodings from student_pics/Name__StudentID.jpeg
+    Stores recognition label as normalized name_key.
     """
     print(" [DB] Loading Student Faces...")
     global known_face_encodings, known_face_names
@@ -87,10 +96,7 @@ def load_student_data():
 
                 if encodings:
                     base = os.path.splitext(file)[0]
-                    # Name__ID -> Name
                     name_part = base.split("__")[0]
-                    # Keep same format as registration: clean_name uses underscores (NOT lowercased there),
-                    # but for matching we normalize to lowercase.
                     name_key = _normalize_name_key(name_part)
 
                     known_face_encodings.append(encodings[0])
@@ -105,12 +111,8 @@ def load_student_data():
 
 def check_registration_by_face_name(face_name_key: str):
     """
-    Registration DB is keyed by student_id in the updated registration code.
-    So for entry validation we look up by name_key inside each record.
-    Returns:
-      True  -> registered
-      False -> found but registered == False
-      None  -> not found / DB missing
+    students.json is keyed by student_id in updated registration code.
+    For entries, we validate by matching record['name_key'].
     """
     try:
         with db_lock:
@@ -119,10 +121,11 @@ def check_registration_by_face_name(face_name_key: str):
         if not db:
             return None
 
-        for sid, rec in db.items():
+        target = _normalize_name_key(face_name_key)
+        for _, rec in db.items():
             if not isinstance(rec, dict):
                 continue
-            if _normalize_name_key(rec.get("name_key", "")) == _normalize_name_key(face_name_key):
+            if _normalize_name_key(rec.get("name_key", "")) == target:
                 return bool(rec.get("registered", False))
 
         return None
@@ -158,7 +161,6 @@ def speak(text):
             return
 
     try:
-        # keep it consistent with registration code (prevents overlap issues)
         subprocess.run(["mpg123", "-q", file_path], timeout=6)
     except Exception:
         pass
@@ -166,7 +168,10 @@ def speak(text):
     update_status(prev_status)
 
 def listen_for_name():
-    """Asks for name with error handling. Returns normalized name_key or None."""
+    """
+    Voice fallback (not reliable for verification unless name_key exists in DB).
+    Returns normalized name_key or None.
+    """
     update_status("LISTENING")
     speak("Face not recognized. Please state your name.")
 
@@ -231,13 +236,14 @@ def status_feed():
 
 # --- LOGIC LOOP ---
 def exam_logic_loop():
-    global current_detected_name
+    global current_detected_name, current_face_count
 
     time.sleep(3)
     speak("System Online.")
 
     last_processed = None
     last_processed_time = 0
+    last_multi_warn = 0
 
     while True:
         update_status("WAITING FOR FACE")
@@ -246,7 +252,17 @@ def exam_logic_loop():
             time.sleep(0.4)
             continue
 
-        # basic debounce to avoid repeating while student stands still
+        # MULTI-FACE BLOCK
+        if current_detected_name == MULTI_LABEL or current_face_count > 1:
+            update_status("MULTIPLE FACES - ONE STUDENT ONLY")
+            if time.time() - last_multi_warn > 6:
+                speak("Multiple faces detected. One student at a time. Please step back.")
+                last_multi_warn = time.time()
+            while current_face_count > 1:
+                time.sleep(0.5)
+            continue
+
+        # Debounce
         if current_detected_name == last_processed and (time.time() - last_processed_time) < 8:
             time.sleep(0.5)
             continue
@@ -259,12 +275,17 @@ def exam_logic_loop():
             speak("Face lost. Process reset.")
             continue
 
-        name_key = current_detected_name  # already normalized in vision loop below
+        # Multi-face check again after instructions
+        if current_face_count > 1 or current_detected_name == MULTI_LABEL:
+            update_status("MULTIPLE FACES - BLOCKED")
+            speak("Multiple faces detected. One student at a time.")
+            continue
+
+        name_key = current_detected_name  # already normalized in vision loop
         update_status(f"PROCESSING: {name_key}")
 
-        # Unknown -> optional voice fallback, but DB is keyed by ID; voice-only can't be verified reliably.
-        # We keep it, but it will usually fail unless their name_key exists in students.json.
-        if name_key == "unknown":
+        # Unknown -> voice fallback (still validates against DB by name_key)
+        if name_key == UNKNOWN_LABEL:
             spoken_name_key = listen_for_name()
             if spoken_name_key:
                 speak(f"I heard {spoken_name_key.replace('_', ' ')}.")
@@ -273,7 +294,6 @@ def exam_logic_loop():
                 current_detected_name = None
                 continue
 
-        # Validation against updated registration DB
         is_registered = check_registration_by_face_name(name_key)
 
         if is_registered is True:
@@ -294,7 +314,6 @@ def exam_logic_loop():
             last_processed = name_key
             last_processed_time = time.time()
 
-            # Wait for them to leave (face changes or disappears)
             while current_detected_name == name_key:
                 time.sleep(1)
 
@@ -307,7 +326,7 @@ def exam_logic_loop():
             while current_detected_name == name_key:
                 time.sleep(1)
 
-        elif is_registered is None:
+        else:
             speak(f"I cannot find registration for {name_key.replace('_', ' ')}.")
             last_processed = name_key
             last_processed_time = time.time()
@@ -317,7 +336,7 @@ def exam_logic_loop():
 
 # --- VISION LOOP ---
 def vision_loop():
-    global video_frame, current_detected_name
+    global video_frame, current_detected_name, current_face_count
 
     print(" [VISION] Starting Camera...")
 
@@ -357,36 +376,53 @@ def vision_loop():
                 cached_face_locations = face_recognition.face_locations(rgb_small_frame)
                 face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
 
+                current_face_count = len(cached_face_locations)
+
                 cached_face_names = []
                 detected_name = None
 
-                if face_encodings:
-                    # single-face workflow: use first face
-                    face_encoding = face_encodings[0]
+                # Multi-face state
+                if current_face_count > 1:
+                    detected_name = MULTI_LABEL
+                    cached_face_names = [MULTI_LABEL] * current_face_count
 
-                    name = "unknown"
+                # Single face -> recognize
+                elif current_face_count == 1 and face_encodings:
+                    face_encoding = face_encodings[0]
+                    name = UNKNOWN_LABEL
+
                     if known_face_encodings:
                         matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
                         face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
                         if len(face_distances) > 0:
-                            best_match_index = np.argmin(face_distances)
-                            if matches[best_match_index]:
-                                name = known_face_names[best_match_index]
+                            best = np.argmin(face_distances)
+                            if matches[best]:
+                                name = known_face_names[best]
 
-                    cached_face_names = [name]
                     detected_name = name
+                    cached_face_names = [name]
+
+                # No face
                 else:
                     detected_name = None
+                    cached_face_names = []
 
                 current_detected_name = detected_name
 
             # Draw rectangles
             for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
                 top *= 4; right *= 4; bottom *= 4; left *= 4
-                color = (0, 255, 0) if name != "unknown" else (0, 0, 255)
+
+                if name == MULTI_LABEL:
+                    color = (0, 165, 255)  # orange
+                    label = "MULTIPLE"
+                else:
+                    color = (0, 255, 0) if name != UNKNOWN_LABEL else (0, 0, 255)
+                    label = str(name)
+
                 cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                 cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
-                cv2.putText(frame, str(name), (left + 6, bottom - 6),
+                cv2.putText(frame, label, (left + 6, bottom - 6),
                             cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
 
             with frame_lock:
@@ -398,8 +434,6 @@ def vision_loop():
 
 if __name__ == "__main__":
     load_student_data()
-
     threading.Thread(target=vision_loop, daemon=True).start()
     threading.Thread(target=exam_logic_loop, daemon=True).start()
-
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
