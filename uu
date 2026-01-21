@@ -1,3 +1,16 @@
+ 640x480-YUYV/Rec709
+[0:15:06.835138467] [2207]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36 - Selected sensor format: 640x480-SGBRG10_1X10/RAW - Selected CFE format: 640x480-PC1g/RAW
+[ WARN:0@10.442] global cap_gstreamer.cpp:1754 open OpenCV | GStreamer warning: unable to query duration of stream
+[ WARN:0@10.442] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
+Robot: System online.
+Robot: I do not recognize you.
+Robot: Please look directly at the camera.
+Robot: Hold still.
+corrupted size vs. prev_size
+Aborted
+(venv) fyplg@FYPLG:~/Desktop/pi/exam $ 
+
+
 # ===============================
 # FACE REGISTRATION SYSTEM
 # With:
