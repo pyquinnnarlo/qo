@@ -1,460 +1,488 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Floating 3D Robot</title>
-  <style>
-    :root{
-      --bg:#05070b;
-      --glow:#00ffcc;
-      --glow2:#7c5cff;
-      --metal1:#f3f6ff;
-      --metal2:#b9c2d6;
-      --shadow:#000000;
-    }
+# ======================
+# ENTRIES APP (UPDATED)
+# Multi-Face Blocking + Deny Unknown + Save Denied Photo
+# Works With Updated Registration DB
+# ======================
 
-    *{ box-sizing:border-box; }
-    body{
-      margin:0;
-      height:100vh;
-      display:grid;
-      place-items:center;
-      background:
-        radial-gradient(1200px 800px at 30% 30%, rgba(124,92,255,.15), transparent 60%),
-        radial-gradient(900px 600px at 70% 60%, rgba(0,255,204,.12), transparent 55%),
-        radial-gradient(700px 500px at 50% 90%, rgba(255,255,255,.06), transparent 60%),
-        var(--bg);
-      overflow:hidden;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      color:#d9e6ff;
-    }
+import threading
+import cv2
+import speech_recognition as sr
+import os
+import time
+import json
+import face_recognition
+import numpy as np
+import logging
+import hashlib
+import subprocess
+from flask import Flask, render_template, Response
+from gtts import gTTS
+from ctypes import *
+from contextlib import contextmanager
 
-    /* subtle stars */
-    body:before{
-      content:"";
-      position:fixed; inset:0;
-      background-image:
-        radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,.30) 1px, transparent 2px),
-        radial-gradient(1px 1px at 80% 30%, rgba(255,255,255,.25) 1px, transparent 2px),
-        radial-gradient(1px 1px at 40% 70%, rgba(255,255,255,.22) 1px, transparent 2px),
-        radial-gradient(1px 1px at 70% 80%, rgba(255,255,255,.18) 1px, transparent 2px),
-        radial-gradient(1px 1px at 20% 85%, rgba(255,255,255,.16) 1px, transparent 2px);
-      opacity:.35;
-      pointer-events:none;
-    }
+# --- ALSA ERROR SUPPRESSION ---
+ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
 
-    .stage{
-      position:relative;
-      width:min(520px, 92vw);
-      height:min(620px, 92vh);
-      display:grid;
-      place-items:center;
-      perspective:1000px;
-      transform-style:preserve-3d;
-    }
+@contextmanager
+def no_alsa_errors():
+    try:
+        asound = cdll.LoadLibrary('libasound.so')
+        asound.snd_lib_error_set_handler(c_error_handler)
+        yield
+        asound.snd_lib_error_set_handler(None)
+    except:
+        yield
 
-    /* floating + gentle tilt */
-    .float{
-      position:relative;
-      transform-style:preserve-3d;
-      animation: bob 3.6s ease-in-out infinite;
-    }
-    @keyframes bob{
-      0%,100%{ transform: translateY(0px) rotateX(6deg) rotateY(-10deg); }
-      50%    { transform: translateY(-18px) rotateX(10deg) rotateY(-2deg); }
-    }
+# --- CONFIGURATION ---
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
-    /* glow halo behind robot */
-    .halo{
-      position:absolute;
-      width:360px; height:360px;
-      border-radius:50%;
-      background:
-        radial-gradient(circle at 50% 50%, rgba(0,255,204,.18), transparent 60%),
-        radial-gradient(circle at 35% 35%, rgba(124,92,255,.18), transparent 62%);
-      filter: blur(10px);
-      transform: translateZ(-60px);
-      pointer-events:none;
-    }
+UNKNOWN_LABEL = "Unknown"
+MULTI_LABEL = "MULTIPLE"
 
-    /* shadow on the "floor" */
-    .floor-shadow{
-      position:absolute;
-      width:320px; height:90px;
-      border-radius:50%;
-      background: radial-gradient(closest-side, rgba(0,0,0,.55), transparent 70%);
-      filter: blur(8px);
-      transform: translateY(210px) translateZ(-120px);
-      animation: shadow 3.6s ease-in-out infinite;
-      pointer-events:none;
-    }
-    @keyframes shadow{
-      0%,100%{ transform: translateY(210px) translateZ(-120px) scale(1); opacity:.9; }
-      50%    { transform: translateY(210px) translateZ(-120px) scale(.85); opacity:.65; }
-    }
+MIC_INDEX = None
 
-    /* robot */
-    .robot{
-      position:relative;
-      width: 320px;
-      height: 380px;
-      transform-style:preserve-3d;
-    }
+# Thread safety
+frame_lock = threading.Lock()
+db_lock = threading.Lock()
 
-    /* head */
-    .head{
-      position:absolute;
-      left:50%;
-      top:0;
-      width: 280px;
-      height: 220px;
-      transform: translateX(-50%) translateZ(40px);
-      border-radius: 46px;
-      background:
-        linear-gradient(145deg, rgba(255,255,255,.95), rgba(185,194,214,.88)),
-        radial-gradient(120px 80px at 30% 25%, rgba(255,255,255,.9), transparent 70%);
-      box-shadow:
-        0 30px 80px rgba(0,0,0,.45),
-        0 0 0 2px rgba(255,255,255,.10) inset;
-      overflow:hidden;
-    }
+# Global Variables
+video_frame = None
+known_face_encodings = []
+known_face_names = []   # normalized name_key
+current_detected_name = None
+current_face_count = 0
+current_status = "SYSTEM READY"
 
-    /* head inner glossy */
-    .head:before{
-      content:"";
-      position:absolute; inset:-20px;
-      background: radial-gradient(240px 140px at 30% 20%, rgba(255,255,255,.65), transparent 60%);
-      transform: translateZ(1px);
-      pointer-events:none;
-    }
+# --- DB HELPERS (MATCH UPDATED REGISTRATION CODE) ---
+def _read_students_db(json_file="students.json"):
+    if not os.path.exists(json_file):
+        return {}
+    try:
+        with open(json_file, "r") as f:
+            content = f.read().strip()
+            return json.loads(content) if content else {}
+    except:
+        return {}
 
-    /* face plate */
-    .face-plate{
-      position:absolute;
-      left:50%;
-      top:52px;
-      width: 230px;
-      height: 120px;
-      transform: translateX(-50%);
-      border-radius: 34px;
-      background: linear-gradient(180deg, rgba(8,12,18,.85), rgba(8,12,18,.72));
-      box-shadow:
-        0 12px 30px rgba(0,0,0,.55),
-        0 0 0 2px rgba(255,255,255,.10) inset;
-    }
+def _normalize_name_key(name: str) -> str:
+    return str(name).strip().lower().replace(" ", "_")
 
-    /* eyes row */
-    .eyes{
-      position:absolute;
-      left:50%;
-      top:26px;
-      transform: translateX(-50%);
-      display:flex;
-      gap: 34px;
-      align-items:center;
-    }
+def load_student_data():
+    """
+    Loads face encodings from student_pics/Name__StudentID.jpeg
+    Stores recognition label as normalized name_key.
+    """
+    print(" [DB] Loading Student Faces...")
+    global known_face_encodings, known_face_names
+    known_face_encodings = []
+    known_face_names = []
 
-    .eye{
-      width: 54px;
-      height: 64px;
-      border-radius: 22px;
-      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.65), rgba(0,255,204,.25) 35%, rgba(0,255,204,.08) 70%);
-      box-shadow:
-        0 0 18px rgba(0,255,204,.55),
-        0 0 0 2px rgba(0,255,204,.15) inset;
-      position:relative;
-      overflow:hidden;
-      transition: all .18s ease;
-    }
+    path = "student_pics"
+    if not os.path.exists(path):
+        os.makedirs(path)
+        print(" [DB] 'student_pics' folder created. Add images there.")
+        return
 
-    .pupil{
-      position:absolute;
-      width: 18px; height: 18px;
-      border-radius:50%;
-      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.9), rgba(0,255,204,.65) 45%, rgba(0,0,0,.35) 80%);
-      left: 18px; top: 26px;
-      filter: drop-shadow(0 0 6px rgba(0,255,204,.55));
-      transition: transform .12s ease;
-    }
+    for file in os.listdir(path):
+        if file.lower().endswith((".jpg", ".png", ".jpeg")):
+            try:
+                img = face_recognition.load_image_file(os.path.join(path, file))
+                encodings = face_recognition.face_encodings(img)
 
-    /* mouth */
-    .mouth{
-      position:absolute;
-      left:50%;
-      bottom:18px;
-      transform: translateX(-50%);
-      width: 120px;
-      height: 12px;
-      border-radius: 999px;
-      background: linear-gradient(90deg, rgba(0,255,204,.15), rgba(0,255,204,.55), rgba(0,255,204,.15));
-      box-shadow: 0 0 14px rgba(0,255,204,.55);
-      transition: all .15s ease;
-    }
+                if encodings:
+                    base = os.path.splitext(file)[0]
+                    name_part = base.split("__")[0]
+                    name_key = _normalize_name_key(name_part)
 
-    /* cheeks LEDs */
-    .cheek{
-      position:absolute;
-      width:10px; height:10px;
-      border-radius:50%;
-      top: 76px;
-      background: rgba(0,255,204,.65);
-      box-shadow: 0 0 10px rgba(0,255,204,.6);
-      opacity:.8;
-    }
-    .cheek.left{ left: 18px; }
-    .cheek.right{ right: 18px; }
+                    known_face_encodings.append(encodings[0])
+                    known_face_names.append(name_key)
+                    print(f"   + Loaded: {name_key}")
+                else:
+                    print(f"   - Warning: No face found in {file}")
+            except Exception as e:
+                print(f"   - Error loading {file}: {e}")
 
-    /* antennas */
-    .antenna{
-      position:absolute;
-      width: 10px;
-      height: 70px;
-      background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(185,194,214,.85));
-      border-radius: 999px;
-      top: -40px;
-      box-shadow: 0 10px 25px rgba(0,0,0,.25);
-    }
-    .antenna.left{ left: 44px; transform: rotate(-18deg); }
-    .antenna.right{ right: 44px; transform: rotate(18deg); }
-    .antenna:after{
-      content:"";
-      position:absolute;
-      left:50%; top:-14px;
-      width: 20px; height: 20px;
-      transform: translateX(-50%);
-      border-radius:50%;
-      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.8), rgba(124,92,255,.55));
-      box-shadow: 0 0 18px rgba(124,92,255,.55);
-    }
+    print(f" [DB] System Ready. Known students: {len(known_face_names)}")
 
-    /* body */
-    .body{
-      position:absolute;
-      left:50%;
-      top: 200px;
-      width: 240px;
-      height: 170px;
-      transform: translateX(-50%) translateZ(20px);
-      border-radius: 44px;
-      background:
-        linear-gradient(145deg, rgba(255,255,255,.92), rgba(185,194,214,.84));
-      box-shadow:
-        0 26px 70px rgba(0,0,0,.40),
-        0 0 0 2px rgba(255,255,255,.10) inset;
-      overflow:hidden;
-    }
+def check_registration_by_face_name(face_name_key: str):
+    """
+    students.json is keyed by student_id in updated registration code.
+    For entries, we validate by matching record['name_key'].
+    """
+    try:
+        with db_lock:
+            db = _read_students_db("students.json")
 
-    /* chest panel */
-    .chest{
-      position:absolute;
-      left:50%;
-      top:42px;
-      transform: translateX(-50%);
-      width: 170px;
-      height: 80px;
-      border-radius: 26px;
-      background: linear-gradient(180deg, rgba(8,12,18,.82), rgba(8,12,18,.72));
-      box-shadow:
-        0 12px 28px rgba(0,0,0,.55),
-        0 0 0 2px rgba(255,255,255,.10) inset;
-    }
+        if not db:
+            return None
 
-    .core{
-      position:absolute;
-      left:50%;
-      top:50%;
-      transform: translate(-50%, -50%);
-      width: 44px; height: 44px;
-      border-radius: 16px;
-      background:
-        radial-gradient(circle at 35% 35%, rgba(255,255,255,.85), rgba(0,255,204,.35) 40%, rgba(0,255,204,.1) 75%);
-      box-shadow:
-        0 0 24px rgba(0,255,204,.55),
-        0 0 0 2px rgba(0,255,204,.14) inset;
-      animation: corePulse 1.3s ease-in-out infinite alternate;
-    }
-    @keyframes corePulse{
-      from { transform: translate(-50%, -50%) scale(1); }
-      to   { transform: translate(-50%, -50%) scale(1.06); }
-    }
+        target = _normalize_name_key(face_name_key)
+        for _, rec in db.items():
+            if not isinstance(rec, dict):
+                continue
+            if _normalize_name_key(rec.get("name_key", "")) == target:
+                return bool(rec.get("registered", False))
 
-    /* arms */
-    .arm{
-      position:absolute;
-      top: 245px;
-      width: 70px;
-      height: 90px;
-      border-radius: 26px;
-      background: linear-gradient(145deg, rgba(255,255,255,.9), rgba(185,194,214,.82));
-      box-shadow: 0 18px 45px rgba(0,0,0,.35);
-      transform-style:preserve-3d;
-    }
-    .arm.left{ left: 6px; transform: translateZ(10px) rotateY(22deg); }
-    .arm.right{ right: 6px; transform: translateZ(10px) rotateY(-22deg); }
+        return None
+    except Exception as e:
+        print(f" [DB ERROR] {e}")
+        return None
 
-    .hand{
-      position:absolute;
-      left:50%;
-      bottom:-14px;
-      transform: translateX(-50%);
-      width: 56px;
-      height: 28px;
-      border-radius: 999px;
-      background: linear-gradient(180deg, rgba(8,12,18,.78), rgba(8,12,18,.62));
-      box-shadow: 0 10px 22px rgba(0,0,0,.45);
-    }
+# --- FRAME HELPERS ---
+def get_current_frame():
+    """Thread-safe snapshot of current frame."""
+    with frame_lock:
+        if video_frame is not None:
+            return video_frame.copy()
+    return None
 
-    /* state styles (hook into your existing /status_feed) */
-    .state-listening .eye{
-      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.75), rgba(0,255,0,.28) 40%, rgba(0,255,0,.10) 75%);
-      box-shadow: 0 0 26px rgba(0,255,0,.55);
-      height: 74px;
-    }
-    .state-listening .mouth{
-      width: 90px;
-      background: linear-gradient(90deg, rgba(0,255,0,.15), rgba(0,255,0,.6), rgba(0,255,0,.15));
-      box-shadow: 0 0 18px rgba(0,255,0,.6);
-    }
+def save_denied_photo(frame, reason="unknown"):
+    """
+    Saves a screenshot of the denied student for audit.
+    - Saves full frame + metadata json sidecar.
+    - Only saves if exactly 1 face is present (prevents saving crowds).
+    """
+    try:
+        if frame is None:
+            return False
 
-    .state-thinking .eye{
-      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.70), rgba(255,170,0,.28) 40%, rgba(255,170,0,.10) 75%);
-      box-shadow: 0 0 24px rgba(255,170,0,.55);
-      animation: thinkBlink .55s infinite alternate;
-    }
-    @keyframes thinkBlink{
-      from { transform: scaleY(1); }
-      to   { transform: scaleY(.72); }
-    }
-    .state-thinking .mouth{
-      width: 54px;
-      background: linear-gradient(90deg, rgba(255,170,0,.15), rgba(255,170,0,.62), rgba(255,170,0,.15));
-      box-shadow: 0 0 18px rgba(255,170,0,.62);
-    }
+        # verify single face in the snapshot
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        locs = face_recognition.face_locations(rgb)
+        if len(locs) != 1:
+            return False
 
-    .state-speaking .mouth{
-      animation: talk .18s infinite alternate;
-    }
-    @keyframes talk{
-      0%   { height: 12px; width: 120px; border-radius: 999px; }
-      100% { height: 46px; width: 86px; border-radius: 22px; }
-    }
-    .state-speaking .eye{
-      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.70), rgba(0,204,255,.28) 40%, rgba(0,204,255,.10) 75%);
-      box-shadow: 0 0 22px rgba(0,204,255,.55);
-    }
+        folder = "denied_pics"
+        if not os.path.exists(folder):
+            os.makedirs(folder)
 
-    /* camera overlay */
-    .camera-feed{
-      position: fixed;
-      bottom: 18px;
-      right: 18px;
-      width: 260px;
-      max-width: 42vw;
-      border-radius: 14px;
-      border: 1px solid rgba(255,255,255,.14);
-      box-shadow: 0 18px 40px rgba(0,0,0,.55);
-      opacity:.92;
-    }
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"DENIED_{reason}_{ts}.jpg"
+        path = os.path.join(folder, filename)
 
-    #status-text{
-      position: fixed;
-      bottom: 24px;
-      left: 18px;
-      font-size: 14px;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: rgba(8,12,18,.55);
-      border: 1px solid rgba(255,255,255,.10);
-      backdrop-filter: blur(10px);
-    }
-  </style>
-</head>
-<body>
+        cv2.imwrite(path, frame)
 
-  <div class="stage">
-    <div class="float" id="robot-root">
-      <div class="halo"></div>
-      <div class="floor-shadow"></div>
+        meta = {
+            "timestamp_unix": time.time(),
+            "timestamp_local": ts,
+            "reason": reason,
+            "faces_detected": len(locs),
+            "image_path": path,
+        }
+        with open(os.path.join(folder, f"DENIED_{reason}_{ts}.json"), "w") as f:
+            json.dump(meta, f, indent=2)
 
-      <div class="robot">
-        <div class="head">
-          <div class="antenna left"></div>
-          <div class="antenna right"></div>
+        print(f" [DENIED] Saved: {path}")
+        return True
+    except Exception as e:
+        print(f" [DENIED ERROR] {e}")
+        return False
 
-          <div class="face-plate">
-            <div class="cheek left"></div>
-            <div class="cheek right"></div>
+# --- AUDIO FUNCTIONS ---
+def update_status(status):
+    global current_status
+    current_status = status
 
-            <div class="eyes">
-              <div class="eye"><div class="pupil" id="p1"></div></div>
-              <div class="eye"><div class="pupil" id="p2"></div></div>
-            </div>
+def speak(text):
+    global current_status
+    print(f"Robot: {text}")
 
-            <div class="mouth" id="mouth"></div>
-          </div>
-        </div>
+    prev_status = current_status
+    update_status(f"SPEAKING: {text}")
 
-        <div class="arm left"><div class="hand"></div></div>
-        <div class="arm right"><div class="hand"></div></div>
+    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
+    file_path = f"audio_cache/{filename}"
 
-        <div class="body">
-          <div class="chest">
-            <div class="core"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+    if not os.path.exists("audio_cache"):
+        os.makedirs("audio_cache")
 
-  <div id="status-text">SYSTEM READY</div>
+    if not os.path.exists(file_path):
+        try:
+            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts.save(file_path)
+        except Exception as e:
+            print(f" [ERROR] Could not generate TTS: {e}")
+            update_status(prev_status)
+            return
 
-  <!-- Live Camera Stream -->
-  <img src="/video_feed" class="camera-feed" alt="Vision" />
+    try:
+        subprocess.run(["mpg123", "-q", file_path], timeout=6)
+    except Exception:
+        pass
 
-  <script>
-    const root = document.getElementById("robot-root");
-    const statusText = document.getElementById("status-text");
-    const pupils = [document.getElementById("p1"), document.getElementById("p2")];
+    update_status(prev_status)
 
-    // Cute idle eye movement
-    function rand(min, max){ return Math.random() * (max - min) + min; }
-    setInterval(() => {
-      const x = rand(-8, 8);
-      const y = rand(-6, 6);
-      pupils.forEach(p => p.style.transform = `translate(${x}px, ${y}px)`);
-    }, 700);
+def listen_for_name():
+    """
+    Kept for optional use, but DO NOT admit entry based on speech.
+    """
+    update_status("LISTENING")
+    speak("Face not recognized. Please state your name.")
 
-    // Random blink when idle (no state class)
-    setInterval(() => {
-      const cls = root.className || "";
-      if (!cls.includes("state-")) {
-        root.classList.add("blink");
-        const eyes = document.querySelectorAll(".eye");
-        eyes.forEach(e => e.style.transform = "scaleY(0.12)");
-        setTimeout(() => eyes.forEach(e => e.style.transform = ""), 160);
-        setTimeout(() => root.classList.remove("blink"), 200);
-      }
-    }, 3800);
+    r = sr.Recognizer()
 
-    // Map backend status to state classes
-    function setState(stateText){
-      root.classList.remove("state-listening","state-thinking","state-speaking");
-      const s = stateText.toUpperCase();
+    with no_alsa_errors():
+        try:
+            mic = sr.Microphone(device_index=MIC_INDEX)
+            with mic as source:
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                audio = r.listen(source, timeout=4, phrase_time_limit=4)
 
-      if (s.includes("LISTENING")) root.classList.add("state-listening");
-      if (s.includes("THINKING"))  root.classList.add("state-thinking");
-      if (s.includes("SPEAKING"))  root.classList.add("state-speaking");
-    }
+                update_status("THINKING")
+                spoken = r.recognize_sphinx(audio).lower()
+                return _normalize_name_key(spoken)
+        except:
+            return None
+        finally:
+            update_status("IDLE")
 
-    const evtSource = new EventSource("/status_feed");
-    evtSource.onmessage = (event) => {
-      const state = event.data || "SYSTEM READY";
-      statusText.textContent = state;
-      setState(state);
-    };
-  </script>
-</body>
-</html>
+# --- WEB SERVER ---
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+def generate_frames():
+    global video_frame
+    while True:
+        with frame_lock:
+            frame = video_frame.copy() if video_frame is not None else None
+
+        if frame is not None:
+            try:
+                ret, buffer = cv2.imencode('.jpg', frame)
+                if ret:
+                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            except:
+                pass
+
+        time.sleep(0.04)
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/status_feed')
+def status_feed():
+    def generate():
+        while True:
+            yield f"data: {current_status}\n\n"
+            time.sleep(0.5)
+    return Response(generate(), mimetype="text/event-stream")
+
+# --- LOGIC LOOP ---
+def exam_logic_loop():
+    global current_detected_name, current_face_count
+
+    time.sleep(3)
+    speak("System Online.")
+
+    last_processed = None
+    last_processed_time = 0
+    last_multi_warn = 0
+
+    while True:
+        update_status("WAITING FOR FACE")
+
+        if current_detected_name is None:
+            time.sleep(0.4)
+            continue
+
+        # MULTI-FACE BLOCK
+        if current_detected_name == MULTI_LABEL or current_face_count > 1:
+            update_status("MULTIPLE FACES - ONE STUDENT ONLY")
+            if time.time() - last_multi_warn > 6:
+                speak("Multiple faces detected. One student at a time. Please step back.")
+                last_multi_warn = time.time()
+            while current_face_count > 1:
+                time.sleep(0.5)
+            continue
+
+        # Debounce
+        if current_detected_name == last_processed and (time.time() - last_processed_time) < 8:
+            time.sleep(0.5)
+            continue
+
+        update_status("INSTRUCTING STUDENT")
+        speak("Hi. Look directly at the camera. Remove anything covering your face.")
+        time.sleep(2)
+
+        if current_detected_name is None:
+            speak("Face lost. Process reset.")
+            continue
+
+        # Multi-face check again
+        if current_face_count > 1 or current_detected_name == MULTI_LABEL:
+            update_status("MULTIPLE FACES - BLOCKED")
+            speak("Multiple faces detected. One student at a time.")
+            continue
+
+        name_key = current_detected_name  # normalized in vision loop
+        update_status(f"PROCESSING: {name_key}")
+
+        # --- DENY IF NOT RECOGNIZED ---
+        if name_key == UNKNOWN_LABEL:
+            update_status("DENIED - NOT RECOGNIZED")
+            snap = get_current_frame()
+            save_denied_photo(snap, reason="not_recognized")
+
+            speak("Access denied. You are not recognized.")
+            speak("Please try again. If the problem continues, contact the administration.")
+
+            last_processed = "DENIED_UNKNOWN"
+            last_processed_time = time.time()
+
+            # Wait for them to leave
+            while current_detected_name == UNKNOWN_LABEL:
+                time.sleep(0.8)
+
+            continue
+
+        # If recognized but not in DB / not registered -> deny and snapshot
+        is_registered = check_registration_by_face_name(name_key)
+
+        if is_registered is True:
+            speak(f"Hello {name_key.replace('_', ' ')}.")
+            time.sleep(0.2)
+            speak("You are registered.")
+
+            update_status("READING RULES")
+            speak("Attention. Please listen to the exam rules.")
+            time.sleep(0.2)
+            speak("No phones or smart watches are allowed in the exam hall or during the exam.")
+            time.sleep(0.2)
+            speak("Failure to follow these rules will result in the dismissal of the test.")
+            time.sleep(0.2)
+
+            speak("You may enter now.")
+
+            last_processed = name_key
+            last_processed_time = time.time()
+
+            while current_detected_name == name_key:
+                time.sleep(1)
+
+            speak("Next student.")
+
+        else:
+            # Deny: either explicitly not registered (False) OR not found (None)
+            reason = "not_registered" if is_registered is False else "not_found_in_db"
+            update_status("DENIED - NOT REGISTERED")
+            snap = get_current_frame()
+            save_denied_photo(snap, reason=reason)
+
+            speak(f"Access denied. {name_key.replace('_', ' ')}, you are not registered.")
+            speak("Please try again or contact the administration.")
+
+            last_processed = f"DENIED_{name_key}"
+            last_processed_time = time.time()
+
+            while current_detected_name == name_key:
+                time.sleep(1)
+
+        time.sleep(0.5)
+
+# --- VISION LOOP ---
+def vision_loop():
+    global video_frame, current_detected_name, current_face_count
+
+    print(" [VISION] Starting Camera...")
+
+    pipelines = [
+        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
+        0
+    ]
+
+    cap = None
+    for pipeline in pipelines:
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER) if isinstance(pipeline, str) else cv2.VideoCapture(pipeline)
+        if cap.isOpened():
+            print(f" [VISION] Camera opened with: {pipeline}")
+            break
+
+    if not cap or not cap.isOpened():
+        print(" [ERROR] Could not open any camera.")
+        return
+
+    frame_count = 0
+    cached_face_locations = []
+    cached_face_names = []
+
+    while True:
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
+
+            frame_count += 1
+
+            if frame_count % 5 == 0:
+                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+
+                current_face_count = len(cached_face_locations)
+
+                cached_face_names = []
+                detected_name = None
+
+                if current_face_count > 1:
+                    detected_name = MULTI_LABEL
+                    cached_face_names = [MULTI_LABEL] * current_face_count
+
+                elif current_face_count == 1 and face_encodings:
+                    face_encoding = face_encodings[0]
+                    name = UNKNOWN_LABEL
+
+                    if known_face_encodings:
+                        matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
+                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                        if len(face_distances) > 0:
+                            best = np.argmin(face_distances)
+                            if matches[best]:
+                                name = known_face_names[best]
+
+                    detected_name = name
+                    cached_face_names = [name]
+
+                else:
+                    detected_name = None
+                    cached_face_names = []
+
+                current_detected_name = detected_name
+
+            # Draw rectangles
+            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
+                top *= 4; right *= 4; bottom *= 4; left *= 4
+
+                if name == MULTI_LABEL:
+                    color = (0, 165, 255)
+                    label = "MULTIPLE"
+                else:
+                    color = (0, 255, 0) if name != UNKNOWN_LABEL else (0, 0, 255)
+                    label = str(name)
+
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+                cv2.putText(frame, label, (left + 6, bottom - 6),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+            with frame_lock:
+                video_frame = frame.copy()
+
+        except Exception as e:
+            print(f" [VISION WARNING] {e}")
+            time.sleep(0.1)
+
+if __name__ == "__main__":
+    load_student_data()
+    threading.Thread(target=vision_loop, daemon=True).start()
+    threading.Thread(target=exam_logic_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
