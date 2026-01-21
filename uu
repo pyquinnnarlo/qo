@@ -1,6 +1,6 @@
 # =========================
 # REGISTRATION APP (UPDATED)
-# Multi-Face Blocking Added
+# Multi-Face Blocking + Anti-Photo Spoofing (Liveness)
 # =========================
 
 import threading
@@ -13,6 +13,7 @@ import numpy as np
 import logging
 import hashlib
 import subprocess
+import random
 from flask import Flask, render_template, Response, request, jsonify
 from gtts import gTTS
 
@@ -26,8 +27,8 @@ MULTI_LABEL = "MULTIPLE"  # internal label for multi-face state
 
 # Global Variables
 video_frame = None
-frame_lock = threading.Lock()  # Mutex for frame access
-db_lock = threading.Lock()     # Mutex for students.json + known_face_* updates
+frame_lock = threading.Lock()
+db_lock = threading.Lock()
 
 known_face_encodings = []
 known_face_names = []
@@ -35,10 +36,9 @@ known_face_names = []
 current_detected_name = None
 current_face_location = None          # single-face best location
 current_face_locations = []           # all face boxes
-current_face_count = 0                # number of faces
+current_face_count = 0
 current_status = "SYSTEM READY"
 
-# Flags for Thread Safety
 scan_active = True
 pending_registration_data = None
 registration_frame_buffer = None
@@ -77,7 +77,7 @@ def load_student_data():
                 encs = face_recognition.face_encodings(img)
                 if encs:
                     base = os.path.splitext(file)[0]
-                    display_name = base.split("__")[0]  # Name__ID -> Name
+                    display_name = base.split("__")[0]
                     known_face_encodings.append(encs[0])
                     known_face_names.append(display_name)
                     print(f"   + Loaded: {file}")
@@ -89,7 +89,7 @@ def save_new_student(name, student_id, frame):
     Prevent duplicate registration by:
       1) student_id already exists in students.json
       2) captured face already matches an existing encoding
-      3) multi-face / no-face capture is blocked
+      3) multi-face / no-face capture blocked
     Returns: (ok: bool, message: str)
     """
     try:
@@ -99,7 +99,6 @@ def save_new_student(name, student_id, frame):
         clean_name = name.strip().replace(" ", "_")
         sid_clean = _sanitize_id(student_id)
 
-        # Face encoding from captured frame (convert BGR -> RGB)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         locs = face_recognition.face_locations(rgb_frame)
         if len(locs) != 1:
@@ -116,12 +115,10 @@ def save_new_student(name, student_id, frame):
             json_file = "students.json"
             db = _read_students_db(json_file)
 
-            # 1) Duplicate ID check
             if sid_clean in db:
                 existing_name = db[sid_clean].get("full_name") or db[sid_clean].get("name_key") or "student"
                 return False, f"Duplicate blocked: ID already registered for {existing_name}."
 
-            # 2) Duplicate face check
             if known_face_encodings:
                 matches = face_recognition.compare_faces(known_face_encodings, new_enc, tolerance=0.45)
                 if True in matches:
@@ -132,11 +129,9 @@ def save_new_student(name, student_id, frame):
             if not os.path.exists("student_pics"):
                 os.makedirs("student_pics")
 
-            # Save as Name__ID
             img_path = f"student_pics/{clean_name}__{sid_clean}.jpeg"
             cv2.imwrite(img_path, frame)
 
-            # DB keyed by student_id
             db[sid_clean] = {
                 "full_name": name,
                 "student_id": sid_clean,
@@ -207,6 +202,90 @@ def update_status(status):
     global current_status
     current_status = status
 
+# --- ANTI-PHOTO SPOOFING (LIVENESS) ---
+def _eye_aspect_ratio(eye_pts):
+    # eye_pts: list of 6 (x,y) points
+    p = np.array(eye_pts, dtype=np.float32)
+    if p.shape[0] < 6:
+        return 1.0
+    A = np.linalg.norm(p[1] - p[5])
+    B = np.linalg.norm(p[2] - p[4])
+    C = np.linalg.norm(p[0] - p[3]) + 1e-6
+    return (A + B) / (2.0 * C)
+
+def _extract_landmarks_single_face(frame_bgr):
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    locs = face_recognition.face_locations(rgb)
+    if len(locs) != 1:
+        return None, None
+    lms = face_recognition.face_landmarks(rgb, locs)
+    if not lms:
+        return None, None
+    return locs[0], lms[0]
+
+def liveness_check(duration_sec=5.0, require_blinks=1, require_head_move=True,
+                   ear_thresh=0.21, head_move_norm_thresh=0.08):
+    """
+    Simple challenge liveness:
+      - detect blink(s) using Eye Aspect Ratio (EAR)
+      - detect head movement using nose x shift normalized by inter-ocular distance
+
+    Returns: (ok: bool, details: dict)
+    """
+    start = time.time()
+    blinks = 0
+    prev_below = False
+    nose_rel = []
+
+    while time.time() - start < duration_sec:
+        frame = get_current_frame()
+        if frame is None:
+            time.sleep(0.1)
+            continue
+
+        loc, lm = _extract_landmarks_single_face(frame)
+        if lm is None:
+            time.sleep(0.15)
+            continue
+
+        if "left_eye" not in lm or "right_eye" not in lm:
+            time.sleep(0.15)
+            continue
+
+        left_ear = _eye_aspect_ratio(lm["left_eye"])
+        right_ear = _eye_aspect_ratio(lm["right_eye"])
+        ear = (left_ear + right_ear) / 2.0
+
+        below = ear < ear_thresh
+        if below and not prev_below:
+            prev_below = True
+        if (not below) and prev_below:
+            blinks += 1
+            prev_below = False
+
+        # Head move proxy: nose x relative to eye center, normalized by inter-ocular distance
+        try:
+            le = np.mean(np.array(lm["left_eye"], dtype=np.float32), axis=0)
+            re = np.mean(np.array(lm["right_eye"], dtype=np.float32), axis=0)
+            eye_center = (le + re) / 2.0
+            iod = np.linalg.norm(re - le) + 1e-6
+
+            nose_pts = lm.get("nose_tip", None)
+            if nose_pts:
+                nose = np.mean(np.array(nose_pts, dtype=np.float32), axis=0)
+                nose_rel.append(float((nose[0] - eye_center[0]) / iod))
+        except:
+            pass
+
+        time.sleep(0.15)
+
+    head_ok = True
+    if require_head_move:
+        head_ok = (len(nose_rel) >= 4) and ((max(nose_rel) - min(nose_rel)) >= head_move_norm_thresh)
+
+    ok = (blinks >= require_blinks) and head_ok
+    return ok, {"blinks": blinks, "head_ok": head_ok, "samples": len(nose_rel)}
+
 # --- FLASK ---
 @app.route('/')
 def index():
@@ -267,7 +346,7 @@ def logic_loop():
             time.sleep(0.5)
             continue
 
-        # MULTI-FACE BLOCK (GLOBAL)
+        # MULTI-FACE BLOCK
         if current_detected_name == MULTI_LABEL or current_face_count > 1:
             update_status("MULTIPLE FACES - ONE STUDENT ONLY")
             if time.time() - last_multi_warn > 6:
@@ -279,7 +358,7 @@ def logic_loop():
 
         detected = current_detected_name
 
-        # 1) KNOWN STUDENT
+        # KNOWN STUDENT
         if detected != UNKNOWN_LABEL:
             update_status(f"WELCOME BACK {detected}")
             speak(f"Hello {detected.replace('_', ' ')}.")
@@ -288,12 +367,11 @@ def logic_loop():
                 time.sleep(0.5)
             continue
 
-        # 2) NEW STUDENT
+        # NEW STUDENT
         update_status("NEW STUDENT DETECTED")
         speak("Hello. I do not recognize you.")
         time.sleep(0.5)
 
-        # Ensure exactly 1 face before instructions/capture
         if current_face_count != 1:
             update_status("ONE FACE REQUIRED")
             speak("One student only. Please make sure only one face is in view.")
@@ -305,15 +383,25 @@ def logic_loop():
         speak("Please look directly at the camera.")
         time.sleep(0.5)
         speak("Please remove any hats, glasses, or hair covering your face.")
-        time.sleep(3)
+        time.sleep(2)
 
-        # Multi-face check again right before capture
-        if current_face_count != 1:
-            update_status("MULTIPLE FACES - CAPTURE BLOCKED")
-            speak("Multiple faces detected. Capture blocked. One student at a time.")
+        # --- LIVENESS CHALLENGE (ANTI-PHOTO SPOOFING) ---
+        update_status("LIVENESS CHECK")
+        # simple randomized prompt (still validates by blink + movement)
+        prompt = random.choice([
+            "Liveness check. Please blink twice and slowly turn your head left and right.",
+            "Liveness check. Blink twice, then move your head slightly to the left and to the right."
+        ])
+        speak(prompt)
+
+        ok_live, details = liveness_check(duration_sec=6.0, require_blinks=2, require_head_move=True)
+        if not ok_live:
+            update_status("LIVENESS FAILED")
+            speak("Liveness failed. No photographs. Please try again.")
+            time.sleep(2)
             continue
 
-        # Lighting check uses single-face location
+        # --- LIGHTING CHECK ---
         frame_snapshot = get_current_frame()
         if frame_snapshot is not None and current_face_location is not None:
             is_bright, _ = check_lighting(frame_snapshot, current_face_location)
@@ -323,6 +411,7 @@ def logic_loop():
                 time.sleep(3)
                 continue
 
+        # --- CAPTURE ---
         speak("Hold still.")
         time.sleep(1.0)
 
@@ -420,12 +509,10 @@ def vision_loop():
             locs = face_recognition.face_locations(rgb)
             current_face_count = len(locs)
 
-            # scale locs to full size for drawing/lighting
             scaled_locs = [(t*4, r*4, b*4, l*4) for (t, r, b, l) in locs]
             current_face_locations = scaled_locs
             current_face_location = scaled_locs[0] if scaled_locs else None
 
-            # multi-face -> block at logic layer
             if current_face_count > 1:
                 current_detected_name = MULTI_LABEL
             elif current_face_count == 1:
@@ -443,11 +530,11 @@ def vision_loop():
             else:
                 current_detected_name = None
 
-        # Draw all boxes (even when scan paused; reuse last)
+        # Draw all boxes
         if current_face_locations:
             for (top, right, bottom, left) in current_face_locations:
                 if current_face_count > 1 or current_detected_name == MULTI_LABEL:
-                    color = (0, 165, 255)  # orange for multi
+                    color = (0, 165, 255)
                     label = "MULTIPLE"
                 else:
                     color = (0, 255, 0) if current_detected_name != UNKNOWN_LABEL else (0, 0, 255)
