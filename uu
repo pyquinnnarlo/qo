@@ -1,554 +1,460 @@
-# =========================
-# REGISTRATION APP (UPDATED)
-# Multi-Face Blocking + Anti-Photo Spoofing (Liveness)
-# =========================
-
-import threading
-import cv2
-import os
-import time
-import json
-import face_recognition
-import numpy as np
-import logging
-import hashlib
-import subprocess
-import random
-from flask import Flask, render_template, Response, request, jsonify
-from gtts import gTTS
-
-# --- CONFIGURATION ---
-app = Flask(__name__)
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
-UNKNOWN_LABEL = "Unknown"
-MULTI_LABEL = "MULTIPLE"  # internal label for multi-face state
-
-# Global Variables
-video_frame = None
-frame_lock = threading.Lock()
-db_lock = threading.Lock()
-
-known_face_encodings = []
-known_face_names = []
-
-current_detected_name = None
-current_face_location = None          # single-face best location
-current_face_locations = []           # all face boxes
-current_face_count = 0
-current_status = "SYSTEM READY"
-
-scan_active = True
-pending_registration_data = None
-registration_frame_buffer = None
-
-# --- DB HELPERS ---
-def _read_students_db(json_file="students.json"):
-    if not os.path.exists(json_file):
-        return {}
-    try:
-        with open(json_file, "r") as f:
-            content = f.read().strip()
-            return json.loads(content) if content else {}
-    except:
-        return {}
-
-def _sanitize_id(student_id: str) -> str:
-    sid = str(student_id).strip()
-    sid = "".join(ch for ch in sid if ch.isalnum() or ch in ("-", "_"))
-    return sid or "UNKNOWN_ID"
-
-# --- DATABASE ---
-def load_student_data():
-    print(" [DB] Loading Student Faces...")
-    global known_face_encodings, known_face_names
-    known_face_encodings = []
-    known_face_names = []
-
-    path = "student_pics"
-    if not os.path.exists(path):
-        os.makedirs(path)
-
-    for file in os.listdir(path):
-        if file.lower().endswith((".jpg", ".png", ".jpeg")):
-            try:
-                img = face_recognition.load_image_file(os.path.join(path, file))
-                encs = face_recognition.face_encodings(img)
-                if encs:
-                    base = os.path.splitext(file)[0]
-                    display_name = base.split("__")[0]
-                    known_face_encodings.append(encs[0])
-                    known_face_names.append(display_name)
-                    print(f"   + Loaded: {file}")
-            except:
-                pass
-
-def save_new_student(name, student_id, frame):
-    """
-    Prevent duplicate registration by:
-      1) student_id already exists in students.json
-      2) captured face already matches an existing encoding
-      3) multi-face / no-face capture blocked
-    Returns: (ok: bool, message: str)
-    """
-    try:
-        if frame is None:
-            return False, "Camera frame missing."
-
-        clean_name = name.strip().replace(" ", "_")
-        sid_clean = _sanitize_id(student_id)
-
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        locs = face_recognition.face_locations(rgb_frame)
-        if len(locs) != 1:
-            if len(locs) == 0:
-                return False, "No face found. Try again."
-            return False, "Multiple faces detected. One student at a time."
-
-        new_encs = face_recognition.face_encodings(rgb_frame, locs)
-        if not new_encs:
-            return False, "Face not clear. Try again."
-        new_enc = new_encs[0]
-
-        with db_lock:
-            json_file = "students.json"
-            db = _read_students_db(json_file)
-
-            if sid_clean in db:
-                existing_name = db[sid_clean].get("full_name") or db[sid_clean].get("name_key") or "student"
-                return False, f"Duplicate blocked: ID already registered for {existing_name}."
-
-            if known_face_encodings:
-                matches = face_recognition.compare_faces(known_face_encodings, new_enc, tolerance=0.45)
-                if True in matches:
-                    idx = matches.index(True)
-                    existing_label = known_face_names[idx] if idx < len(known_face_names) else "student"
-                    return False, f"Duplicate blocked: Face already registered as {existing_label.replace('_',' ')}."
-
-            if not os.path.exists("student_pics"):
-                os.makedirs("student_pics")
-
-            img_path = f"student_pics/{clean_name}__{sid_clean}.jpeg"
-            cv2.imwrite(img_path, frame)
-
-            db[sid_clean] = {
-                "full_name": name,
-                "student_id": sid_clean,
-                "name_key": clean_name,
-                "image_path": img_path,
-                "registered": True,
-                "timestamp": time.time()
-            }
-
-            with open(json_file, "w") as f:
-                json.dump(db, f, indent=4)
-
-            known_face_encodings.append(new_enc)
-            known_face_names.append(clean_name)
-
-        return True, "Registration saved."
-    except Exception as e:
-        print(f" [ERROR] Save failed: {e}")
-        return False, "Save failed due to an internal error."
-
-# --- UTILS ---
-def get_current_frame():
-    with frame_lock:
-        if video_frame is not None:
-            return video_frame.copy()
-    return None
-
-def check_lighting(frame, face_loc):
-    if frame is None or face_loc is None:
-        return False, 0
-    try:
-        top, right, bottom, left = face_loc
-        h, w, _ = frame.shape
-        top = max(0, top); left = max(0, left)
-        bottom = min(h, bottom); right = min(w, right)
-
-        face_roi = frame[top:bottom, left:right]
-        if face_roi.size == 0:
-            return False, 0
-
-        gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
-        avg_brightness = np.mean(gray)
-        return avg_brightness > 50, avg_brightness
-    except:
-        return False, 0
-
-def speak(text):
-    global current_status
-    print(f"Robot: {text}")
-    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
-    file_path = f"audio_cache/{filename}"
-
-    if not os.path.exists("audio_cache"):
-        os.makedirs("audio_cache")
-    if not os.path.exists(file_path):
-        try:
-            tts = gTTS(text=text, lang='en', tld='co.uk')
-            tts.save(file_path)
-        except:
-            return
-
-    try:
-        subprocess.run(["mpg123", "-q", file_path], timeout=6)
-    except Exception:
-        pass
-
-def update_status(status):
-    global current_status
-    current_status = status
-
-# --- ANTI-PHOTO SPOOFING (LIVENESS) ---
-def _eye_aspect_ratio(eye_pts):
-    # eye_pts: list of 6 (x,y) points
-    p = np.array(eye_pts, dtype=np.float32)
-    if p.shape[0] < 6:
-        return 1.0
-    A = np.linalg.norm(p[1] - p[5])
-    B = np.linalg.norm(p[2] - p[4])
-    C = np.linalg.norm(p[0] - p[3]) + 1e-6
-    return (A + B) / (2.0 * C)
-
-def _extract_landmarks_single_face(frame_bgr):
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    locs = face_recognition.face_locations(rgb)
-    if len(locs) != 1:
-        return None, None
-    lms = face_recognition.face_landmarks(rgb, locs)
-    if not lms:
-        return None, None
-    return locs[0], lms[0]
-
-def liveness_check(duration_sec=5.0, require_blinks=1, require_head_move=True,
-                   ear_thresh=0.21, head_move_norm_thresh=0.08):
-    """
-    Simple challenge liveness:
-      - detect blink(s) using Eye Aspect Ratio (EAR)
-      - detect head movement using nose x shift normalized by inter-ocular distance
-
-    Returns: (ok: bool, details: dict)
-    """
-    start = time.time()
-    blinks = 0
-    prev_below = False
-    nose_rel = []
-
-    while time.time() - start < duration_sec:
-        frame = get_current_frame()
-        if frame is None:
-            time.sleep(0.1)
-            continue
-
-        loc, lm = _extract_landmarks_single_face(frame)
-        if lm is None:
-            time.sleep(0.15)
-            continue
-
-        if "left_eye" not in lm or "right_eye" not in lm:
-            time.sleep(0.15)
-            continue
-
-        left_ear = _eye_aspect_ratio(lm["left_eye"])
-        right_ear = _eye_aspect_ratio(lm["right_eye"])
-        ear = (left_ear + right_ear) / 2.0
-
-        below = ear < ear_thresh
-        if below and not prev_below:
-            prev_below = True
-        if (not below) and prev_below:
-            blinks += 1
-            prev_below = False
-
-        # Head move proxy: nose x relative to eye center, normalized by inter-ocular distance
-        try:
-            le = np.mean(np.array(lm["left_eye"], dtype=np.float32), axis=0)
-            re = np.mean(np.array(lm["right_eye"], dtype=np.float32), axis=0)
-            eye_center = (le + re) / 2.0
-            iod = np.linalg.norm(re - le) + 1e-6
-
-            nose_pts = lm.get("nose_tip", None)
-            if nose_pts:
-                nose = np.mean(np.array(nose_pts, dtype=np.float32), axis=0)
-                nose_rel.append(float((nose[0] - eye_center[0]) / iod))
-        except:
-            pass
-
-        time.sleep(0.15)
-
-    head_ok = True
-    if require_head_move:
-        head_ok = (len(nose_rel) >= 4) and ((max(nose_rel) - min(nose_rel)) >= head_move_norm_thresh)
-
-    ok = (blinks >= require_blinks) and head_ok
-    return ok, {"blinks": blinks, "head_ok": head_ok, "samples": len(nose_rel)}
-
-# --- FLASK ---
-@app.route('/')
-def index():
-    return render_template('register.html')
-
-@app.route('/video_feed')
-def video_feed():
-    def generate():
-        while True:
-            with frame_lock:
-                frame = video_frame.copy() if video_frame is not None else None
-
-            if frame is not None:
-                ret, buf = cv2.imencode('.jpg', frame)
-                if ret:
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
-
-            time.sleep(0.05)
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-@app.route('/status_feed')
-def status_feed():
-    def generate():
-        while True:
-            yield f"data: {current_status}\n\n"
-            time.sleep(0.2)
-    return Response(generate(), mimetype="text/event-stream")
-
-@app.route('/register_student', methods=['POST'])
-def register_student():
-    global pending_registration_data
-    data = request.json or {}
-
-    if not data.get('name') or not data.get('id'):
-        return jsonify({"status": "error"}), 400
-
-    if pending_registration_data is not None:
-        return jsonify({"status": "busy", "message": "Registration already pending."}), 409
-
-    pending_registration_data = data
-    return jsonify({"status": "received"}), 200
-
-# --- LOGIC LOOP ---
-def logic_loop():
-    global current_detected_name, pending_registration_data, registration_frame_buffer
-    global current_face_location, current_face_count, scan_active
-
-    time.sleep(2)
-    speak("System Online.")
-
-    last_multi_warn = 0
-
-    while True:
-        update_status("WAITING FOR STUDENT")
-        scan_active = True
-
-        if current_detected_name is None:
-            time.sleep(0.5)
-            continue
-
-        # MULTI-FACE BLOCK
-        if current_detected_name == MULTI_LABEL or current_face_count > 1:
-            update_status("MULTIPLE FACES - ONE STUDENT ONLY")
-            if time.time() - last_multi_warn > 6:
-                speak("Multiple faces detected. One student at a time. Please step back.")
-                last_multi_warn = time.time()
-            while current_face_count > 1:
-                time.sleep(0.5)
-            continue
-
-        detected = current_detected_name
-
-        # KNOWN STUDENT
-        if detected != UNKNOWN_LABEL:
-            update_status(f"WELCOME BACK {detected}")
-            speak(f"Hello {detected.replace('_', ' ')}.")
-            time.sleep(1)
-            while current_detected_name is not None:
-                time.sleep(0.5)
-            continue
-
-        # NEW STUDENT
-        update_status("NEW STUDENT DETECTED")
-        speak("Hello. I do not recognize you.")
-        time.sleep(0.5)
-
-        if current_face_count != 1:
-            update_status("ONE FACE REQUIRED")
-            speak("One student only. Please make sure only one face is in view.")
-            while current_face_count != 1:
-                time.sleep(0.5)
-            continue
-
-        update_status("PREPARING FOR PHOTO")
-        speak("Please look directly at the camera.")
-        time.sleep(0.5)
-        speak("Please remove any hats, glasses, or hair covering your face.")
-        time.sleep(2)
-
-        # --- LIVENESS CHALLENGE (ANTI-PHOTO SPOOFING) ---
-        update_status("LIVENESS CHECK")
-        # simple randomized prompt (still validates by blink + movement)
-        prompt = random.choice([
-            "Liveness check. Please blink twice and slowly turn your head left and right.",
-            "Liveness check. Blink twice, then move your head slightly to the left and to the right."
-        ])
-        speak(prompt)
-
-        ok_live, details = liveness_check(duration_sec=6.0, require_blinks=2, require_head_move=True)
-        if not ok_live:
-            update_status("LIVENESS FAILED")
-            speak("Liveness failed. No photographs. Please try again.")
-            time.sleep(2)
-            continue
-
-        # --- LIGHTING CHECK ---
-        frame_snapshot = get_current_frame()
-        if frame_snapshot is not None and current_face_location is not None:
-            is_bright, _ = check_lighting(frame_snapshot, current_face_location)
-            if not is_bright:
-                update_status("LIGHTING TOO DARK")
-                speak("The lighting is too dark. Please find better light.")
-                time.sleep(3)
-                continue
-
-        # --- CAPTURE ---
-        speak("Hold still.")
-        time.sleep(1.0)
-
-        registration_frame_buffer = get_current_frame()
-        if registration_frame_buffer is None:
-            speak("Camera error.")
-            continue
-
-        # HARD BLOCK: confirm exactly 1 face in the captured frame
-        rgb_cap = cv2.cvtColor(registration_frame_buffer, cv2.COLOR_BGR2RGB)
-        cap_locs = face_recognition.face_locations(rgb_cap)
-        if len(cap_locs) != 1:
-            update_status("CAPTURE INVALID")
-            if len(cap_locs) == 0:
-                speak("No face found. Please try again.")
-            else:
-                speak("Multiple faces detected. One student at a time.")
-            registration_frame_buffer = None
-            continue
-
-        speak("Face captured.")
-        update_status("CAPTURED - PAUSING VISION")
-
-        scan_active = False
-        time.sleep(0.5)
-
-        speak("Please enter your Name and ID on the screen.")
-        update_status("INPUT REQUIRED")
-
-        timer = 0
-        while pending_registration_data is None:
-            time.sleep(0.5)
-            timer += 1
-            if timer > 120:
-                break
-
-        if pending_registration_data:
-            name = pending_registration_data['name']
-            sid = pending_registration_data['id']
-
-            update_status("SAVING...")
-            ok, msg = save_new_student(name, sid, registration_frame_buffer)
-            if ok:
-                update_status("REGISTRATION COMPLETE")
-                speak("Registration successful. Thank you.")
-            else:
-                update_status("REGISTRATION BLOCKED")
-                speak(msg)
-
-            pending_registration_data = None
-            registration_frame_buffer = None
-
-            scan_active = True
-            speak("Please step aside.")
-            while current_detected_name is not None:
-                time.sleep(1)
-        else:
-            update_status("TIMEOUT")
-            speak("Registration timed out. Resetting.")
-            pending_registration_data = None
-            registration_frame_buffer = None
-            scan_active = True
-            time.sleep(2)
-
-# --- VISION LOOP ---
-def vision_loop():
-    global video_frame, current_detected_name
-    global current_face_location, current_face_locations, current_face_count, scan_active
-
-    pipelines = [
-        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
-        0
-    ]
-
-    cap = None
-    for pipeline in pipelines:
-        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER) if isinstance(pipeline, str) else cv2.VideoCapture(pipeline)
-        if cap.isOpened():
-            break
-
-    frame_count = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.1)
-            continue
-
-        frame_count += 1
-
-        if scan_active and frame_count % 5 == 0:
-            small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-
-            locs = face_recognition.face_locations(rgb)
-            current_face_count = len(locs)
-
-            scaled_locs = [(t*4, r*4, b*4, l*4) for (t, r, b, l) in locs]
-            current_face_locations = scaled_locs
-            current_face_location = scaled_locs[0] if scaled_locs else None
-
-            if current_face_count > 1:
-                current_detected_name = MULTI_LABEL
-            elif current_face_count == 1:
-                encs = face_recognition.face_encodings(rgb, locs)
-                name = UNKNOWN_LABEL
-                if encs and known_face_encodings:
-                    enc = encs[0]
-                    matches = face_recognition.compare_faces(known_face_encodings, enc, tolerance=0.5)
-                    dists = face_recognition.face_distance(known_face_encodings, enc)
-                    if len(dists) > 0:
-                        best = np.argmin(dists)
-                        if matches[best]:
-                            name = known_face_names[best]
-                current_detected_name = name
-            else:
-                current_detected_name = None
-
-        # Draw all boxes
-        if current_face_locations:
-            for (top, right, bottom, left) in current_face_locations:
-                if current_face_count > 1 or current_detected_name == MULTI_LABEL:
-                    color = (0, 165, 255)
-                    label = "MULTIPLE"
-                else:
-                    color = (0, 255, 0) if current_detected_name != UNKNOWN_LABEL else (0, 0, 255)
-                    label = str(current_detected_name) if current_detected_name else ""
-
-                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                if label:
-                    cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        with frame_lock:
-            video_frame = frame.copy()
-
-if __name__ == "__main__":
-    load_student_data()
-    threading.Thread(target=vision_loop, daemon=True).start()
-    threading.Thread(target=logic_loop, daemon=True).start()
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Floating 3D Robot</title>
+  <style>
+    :root{
+      --bg:#05070b;
+      --glow:#00ffcc;
+      --glow2:#7c5cff;
+      --metal1:#f3f6ff;
+      --metal2:#b9c2d6;
+      --shadow:#000000;
+    }
+
+    *{ box-sizing:border-box; }
+    body{
+      margin:0;
+      height:100vh;
+      display:grid;
+      place-items:center;
+      background:
+        radial-gradient(1200px 800px at 30% 30%, rgba(124,92,255,.15), transparent 60%),
+        radial-gradient(900px 600px at 70% 60%, rgba(0,255,204,.12), transparent 55%),
+        radial-gradient(700px 500px at 50% 90%, rgba(255,255,255,.06), transparent 60%),
+        var(--bg);
+      overflow:hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      color:#d9e6ff;
+    }
+
+    /* subtle stars */
+    body:before{
+      content:"";
+      position:fixed; inset:0;
+      background-image:
+        radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,.30) 1px, transparent 2px),
+        radial-gradient(1px 1px at 80% 30%, rgba(255,255,255,.25) 1px, transparent 2px),
+        radial-gradient(1px 1px at 40% 70%, rgba(255,255,255,.22) 1px, transparent 2px),
+        radial-gradient(1px 1px at 70% 80%, rgba(255,255,255,.18) 1px, transparent 2px),
+        radial-gradient(1px 1px at 20% 85%, rgba(255,255,255,.16) 1px, transparent 2px);
+      opacity:.35;
+      pointer-events:none;
+    }
+
+    .stage{
+      position:relative;
+      width:min(520px, 92vw);
+      height:min(620px, 92vh);
+      display:grid;
+      place-items:center;
+      perspective:1000px;
+      transform-style:preserve-3d;
+    }
+
+    /* floating + gentle tilt */
+    .float{
+      position:relative;
+      transform-style:preserve-3d;
+      animation: bob 3.6s ease-in-out infinite;
+    }
+    @keyframes bob{
+      0%,100%{ transform: translateY(0px) rotateX(6deg) rotateY(-10deg); }
+      50%    { transform: translateY(-18px) rotateX(10deg) rotateY(-2deg); }
+    }
+
+    /* glow halo behind robot */
+    .halo{
+      position:absolute;
+      width:360px; height:360px;
+      border-radius:50%;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(0,255,204,.18), transparent 60%),
+        radial-gradient(circle at 35% 35%, rgba(124,92,255,.18), transparent 62%);
+      filter: blur(10px);
+      transform: translateZ(-60px);
+      pointer-events:none;
+    }
+
+    /* shadow on the "floor" */
+    .floor-shadow{
+      position:absolute;
+      width:320px; height:90px;
+      border-radius:50%;
+      background: radial-gradient(closest-side, rgba(0,0,0,.55), transparent 70%);
+      filter: blur(8px);
+      transform: translateY(210px) translateZ(-120px);
+      animation: shadow 3.6s ease-in-out infinite;
+      pointer-events:none;
+    }
+    @keyframes shadow{
+      0%,100%{ transform: translateY(210px) translateZ(-120px) scale(1); opacity:.9; }
+      50%    { transform: translateY(210px) translateZ(-120px) scale(.85); opacity:.65; }
+    }
+
+    /* robot */
+    .robot{
+      position:relative;
+      width: 320px;
+      height: 380px;
+      transform-style:preserve-3d;
+    }
+
+    /* head */
+    .head{
+      position:absolute;
+      left:50%;
+      top:0;
+      width: 280px;
+      height: 220px;
+      transform: translateX(-50%) translateZ(40px);
+      border-radius: 46px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.95), rgba(185,194,214,.88)),
+        radial-gradient(120px 80px at 30% 25%, rgba(255,255,255,.9), transparent 70%);
+      box-shadow:
+        0 30px 80px rgba(0,0,0,.45),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+      overflow:hidden;
+    }
+
+    /* head inner glossy */
+    .head:before{
+      content:"";
+      position:absolute; inset:-20px;
+      background: radial-gradient(240px 140px at 30% 20%, rgba(255,255,255,.65), transparent 60%);
+      transform: translateZ(1px);
+      pointer-events:none;
+    }
+
+    /* face plate */
+    .face-plate{
+      position:absolute;
+      left:50%;
+      top:52px;
+      width: 230px;
+      height: 120px;
+      transform: translateX(-50%);
+      border-radius: 34px;
+      background: linear-gradient(180deg, rgba(8,12,18,.85), rgba(8,12,18,.72));
+      box-shadow:
+        0 12px 30px rgba(0,0,0,.55),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+    }
+
+    /* eyes row */
+    .eyes{
+      position:absolute;
+      left:50%;
+      top:26px;
+      transform: translateX(-50%);
+      display:flex;
+      gap: 34px;
+      align-items:center;
+    }
+
+    .eye{
+      width: 54px;
+      height: 64px;
+      border-radius: 22px;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.65), rgba(0,255,204,.25) 35%, rgba(0,255,204,.08) 70%);
+      box-shadow:
+        0 0 18px rgba(0,255,204,.55),
+        0 0 0 2px rgba(0,255,204,.15) inset;
+      position:relative;
+      overflow:hidden;
+      transition: all .18s ease;
+    }
+
+    .pupil{
+      position:absolute;
+      width: 18px; height: 18px;
+      border-radius:50%;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.9), rgba(0,255,204,.65) 45%, rgba(0,0,0,.35) 80%);
+      left: 18px; top: 26px;
+      filter: drop-shadow(0 0 6px rgba(0,255,204,.55));
+      transition: transform .12s ease;
+    }
+
+    /* mouth */
+    .mouth{
+      position:absolute;
+      left:50%;
+      bottom:18px;
+      transform: translateX(-50%);
+      width: 120px;
+      height: 12px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(0,255,204,.15), rgba(0,255,204,.55), rgba(0,255,204,.15));
+      box-shadow: 0 0 14px rgba(0,255,204,.55);
+      transition: all .15s ease;
+    }
+
+    /* cheeks LEDs */
+    .cheek{
+      position:absolute;
+      width:10px; height:10px;
+      border-radius:50%;
+      top: 76px;
+      background: rgba(0,255,204,.65);
+      box-shadow: 0 0 10px rgba(0,255,204,.6);
+      opacity:.8;
+    }
+    .cheek.left{ left: 18px; }
+    .cheek.right{ right: 18px; }
+
+    /* antennas */
+    .antenna{
+      position:absolute;
+      width: 10px;
+      height: 70px;
+      background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(185,194,214,.85));
+      border-radius: 999px;
+      top: -40px;
+      box-shadow: 0 10px 25px rgba(0,0,0,.25);
+    }
+    .antenna.left{ left: 44px; transform: rotate(-18deg); }
+    .antenna.right{ right: 44px; transform: rotate(18deg); }
+    .antenna:after{
+      content:"";
+      position:absolute;
+      left:50%; top:-14px;
+      width: 20px; height: 20px;
+      transform: translateX(-50%);
+      border-radius:50%;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.8), rgba(124,92,255,.55));
+      box-shadow: 0 0 18px rgba(124,92,255,.55);
+    }
+
+    /* body */
+    .body{
+      position:absolute;
+      left:50%;
+      top: 200px;
+      width: 240px;
+      height: 170px;
+      transform: translateX(-50%) translateZ(20px);
+      border-radius: 44px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.92), rgba(185,194,214,.84));
+      box-shadow:
+        0 26px 70px rgba(0,0,0,.40),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+      overflow:hidden;
+    }
+
+    /* chest panel */
+    .chest{
+      position:absolute;
+      left:50%;
+      top:42px;
+      transform: translateX(-50%);
+      width: 170px;
+      height: 80px;
+      border-radius: 26px;
+      background: linear-gradient(180deg, rgba(8,12,18,.82), rgba(8,12,18,.72));
+      box-shadow:
+        0 12px 28px rgba(0,0,0,.55),
+        0 0 0 2px rgba(255,255,255,.10) inset;
+    }
+
+    .core{
+      position:absolute;
+      left:50%;
+      top:50%;
+      transform: translate(-50%, -50%);
+      width: 44px; height: 44px;
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 35% 35%, rgba(255,255,255,.85), rgba(0,255,204,.35) 40%, rgba(0,255,204,.1) 75%);
+      box-shadow:
+        0 0 24px rgba(0,255,204,.55),
+        0 0 0 2px rgba(0,255,204,.14) inset;
+      animation: corePulse 1.3s ease-in-out infinite alternate;
+    }
+    @keyframes corePulse{
+      from { transform: translate(-50%, -50%) scale(1); }
+      to   { transform: translate(-50%, -50%) scale(1.06); }
+    }
+
+    /* arms */
+    .arm{
+      position:absolute;
+      top: 245px;
+      width: 70px;
+      height: 90px;
+      border-radius: 26px;
+      background: linear-gradient(145deg, rgba(255,255,255,.9), rgba(185,194,214,.82));
+      box-shadow: 0 18px 45px rgba(0,0,0,.35);
+      transform-style:preserve-3d;
+    }
+    .arm.left{ left: 6px; transform: translateZ(10px) rotateY(22deg); }
+    .arm.right{ right: 6px; transform: translateZ(10px) rotateY(-22deg); }
+
+    .hand{
+      position:absolute;
+      left:50%;
+      bottom:-14px;
+      transform: translateX(-50%);
+      width: 56px;
+      height: 28px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(8,12,18,.78), rgba(8,12,18,.62));
+      box-shadow: 0 10px 22px rgba(0,0,0,.45);
+    }
+
+    /* state styles (hook into your existing /status_feed) */
+    .state-listening .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.75), rgba(0,255,0,.28) 40%, rgba(0,255,0,.10) 75%);
+      box-shadow: 0 0 26px rgba(0,255,0,.55);
+      height: 74px;
+    }
+    .state-listening .mouth{
+      width: 90px;
+      background: linear-gradient(90deg, rgba(0,255,0,.15), rgba(0,255,0,.6), rgba(0,255,0,.15));
+      box-shadow: 0 0 18px rgba(0,255,0,.6);
+    }
+
+    .state-thinking .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.70), rgba(255,170,0,.28) 40%, rgba(255,170,0,.10) 75%);
+      box-shadow: 0 0 24px rgba(255,170,0,.55);
+      animation: thinkBlink .55s infinite alternate;
+    }
+    @keyframes thinkBlink{
+      from { transform: scaleY(1); }
+      to   { transform: scaleY(.72); }
+    }
+    .state-thinking .mouth{
+      width: 54px;
+      background: linear-gradient(90deg, rgba(255,170,0,.15), rgba(255,170,0,.62), rgba(255,170,0,.15));
+      box-shadow: 0 0 18px rgba(255,170,0,.62);
+    }
+
+    .state-speaking .mouth{
+      animation: talk .18s infinite alternate;
+    }
+    @keyframes talk{
+      0%   { height: 12px; width: 120px; border-radius: 999px; }
+      100% { height: 46px; width: 86px; border-radius: 22px; }
+    }
+    .state-speaking .eye{
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,.70), rgba(0,204,255,.28) 40%, rgba(0,204,255,.10) 75%);
+      box-shadow: 0 0 22px rgba(0,204,255,.55);
+    }
+
+    /* camera overlay */
+    .camera-feed{
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      width: 260px;
+      max-width: 42vw;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.14);
+      box-shadow: 0 18px 40px rgba(0,0,0,.55);
+      opacity:.92;
+    }
+
+    #status-text{
+      position: fixed;
+      bottom: 24px;
+      left: 18px;
+      font-size: 14px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(8,12,18,.55);
+      border: 1px solid rgba(255,255,255,.10);
+      backdrop-filter: blur(10px);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="stage">
+    <div class="float" id="robot-root">
+      <div class="halo"></div>
+      <div class="floor-shadow"></div>
+
+      <div class="robot">
+        <div class="head">
+          <div class="antenna left"></div>
+          <div class="antenna right"></div>
+
+          <div class="face-plate">
+            <div class="cheek left"></div>
+            <div class="cheek right"></div>
+
+            <div class="eyes">
+              <div class="eye"><div class="pupil" id="p1"></div></div>
+              <div class="eye"><div class="pupil" id="p2"></div></div>
+            </div>
+
+            <div class="mouth" id="mouth"></div>
+          </div>
+        </div>
+
+        <div class="arm left"><div class="hand"></div></div>
+        <div class="arm right"><div class="hand"></div></div>
+
+        <div class="body">
+          <div class="chest">
+            <div class="core"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-text">SYSTEM READY</div>
+
+  <!-- Live Camera Stream -->
+  <img src="/video_feed" class="camera-feed" alt="Vision" />
+
+  <script>
+    const root = document.getElementById("robot-root");
+    const statusText = document.getElementById("status-text");
+    const pupils = [document.getElementById("p1"), document.getElementById("p2")];
+
+    // Cute idle eye movement
+    function rand(min, max){ return Math.random() * (max - min) + min; }
+    setInterval(() => {
+      const x = rand(-8, 8);
+      const y = rand(-6, 6);
+      pupils.forEach(p => p.style.transform = `translate(${x}px, ${y}px)`);
+    }, 700);
+
+    // Random blink when idle (no state class)
+    setInterval(() => {
+      const cls = root.className || "";
+      if (!cls.includes("state-")) {
+        root.classList.add("blink");
+        const eyes = document.querySelectorAll(".eye");
+        eyes.forEach(e => e.style.transform = "scaleY(0.12)");
+        setTimeout(() => eyes.forEach(e => e.style.transform = ""), 160);
+        setTimeout(() => root.classList.remove("blink"), 200);
+      }
+    }, 3800);
+
+    // Map backend status to state classes
+    function setState(stateText){
+      root.classList.remove("state-listening","state-thinking","state-speaking");
+      const s = stateText.toUpperCase();
+
+      if (s.includes("LISTENING")) root.classList.add("state-listening");
+      if (s.includes("THINKING"))  root.classList.add("state-thinking");
+      if (s.includes("SPEAKING"))  root.classList.add("state-speaking");
+    }
+
+    const evtSource = new EventSource("/status_feed");
+    evtSource.onmessage = (event) => {
+      const state = event.data || "SYSTEM READY";
+      statusText.textContent = state;
+      setState(state);
+    };
+  </script>
+</body>
+</html>
