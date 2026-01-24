@@ -1,2 +1,8 @@
-sudo apt update
-sudo apt install -y libopenblas-dev libblas-dev liblapack-dev
+fyplg@FYPLG:~ $ sudo apt install -y libatlas-base-dev libjpeg-dev libpng-dev libtiff5-dev libopenblas-devsudo apt install -y libopenblas-dev libblas-dev liblapack-dev
+Package libatlas-base-dev is not available, but is referred to by another package.
+This may mean that the package is missing, has been obsoleted, or
+is only available from another source
+
+Error: Package 'libatlas-base-dev' has no installation candidate
+Error: Unable to locate package libopenblas-devsudo
+Error: Unable to locate package install
