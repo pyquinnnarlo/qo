@@ -27,4 +27,8 @@ sudo apt install -y gstreamer1.0-tools \
   gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
   gstreamer1.0-libav
 
+pip install flask numpy opencv-python gTTS SpeechRecognition face_recognition
+pip install pocketsphinx
+
+
 ```
