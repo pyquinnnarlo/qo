@@ -1,8 +1,14 @@
-fyplg@FYPLG:~ $ sudo apt install -y libatlas-base-dev libjpeg-dev libpng-dev libtiff5-dev libopenblas-devsudo apt install -y libopenblas-dev libblas-dev liblapack-dev
-Package libatlas-base-dev is not available, but is referred to by another package.
-This may mean that the package is missing, has been obsoleted, or
-is only available from another source
+venv) fyplg@FYPLG:~/Desktop/pi $ pip install git+https://github.com/ageitgey/face_recognition_models
+Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
+Collecting git+https://github.com/ageitgey/face_recognition_models
+  Cloning https://github.com/ageitgey/face_recognition_models to /tmp/pip-req-build-u38ry_8o
+  Running command git clone --filter=blob:none --quiet https://github.com/ageitgey/face_recognition_models /tmp/pip-req-build-u38ry_8o
+  Resolved https://github.com/ageitgey/face_recognition_models to commit e67de717267507d1e9246de95692eb8be736ab61
+  Installing build dependencies ... done
+  Getting requirements to build wheel ... done
+  Preparing metadata (pyproject.toml) ... done
+(venv) fyplg@FYPLG:~/Desktop/pi $ python register.py
+Please install `face_recognition_models` with this command before using `face_recognition`:
 
-Error: Package 'libatlas-base-dev' has no installation candidate
-Error: Unable to locate package libopenblas-devsudo
-Error: Unable to locate package install
+pip install git+https://github.com/ageitgey/face_recognition_models
+(venv) fyplg@FYPLG:~/Desktop/pi $ 
