@@ -1,13 +1,24 @@
 # ======================
 # ENTRIES APP (UPDATED)
-# Multi-Face Blocking + Deny Unknown + Save Denied Photo
-# Works With Updated Registration DB
+# Fix 2 + Fix 3 Applied:
+# - Force Native Single-Threading (OpenMP/OpenBLAS/etc) + OpenCV Single-Thread
+# - Serialize All face_recognition (dlib) Calls With A Global Lock (Fixes free(): invalid size In Multi-Thread Use)
+# - Use HOG Model + No Upsample + Reduce Scan Frequency
 # ======================
+
+import os
+
+# --- FIX 2: Prevent Native Thread Races (dlib/OpenMP/OpenBLAS) ---
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import threading
 import cv2
+cv2.setNumThreads(1)  # --- FIX 2: OpenCV Single-Thread ---
+
 import speech_recognition as sr
-import os
 import time
 import json
 import face_recognition
@@ -20,6 +31,9 @@ from gtts import gTTS
 from ctypes import *
 from contextlib import contextmanager
 
+# --- FIX 2: Serialize All face_recognition (dlib) Calls ---
+fr_lock = threading.Lock()
+
 # --- ALSA ERROR SUPPRESSION ---
 ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
 def py_error_handler(filename, line, function, err, fmt):
@@ -29,7 +43,7 @@ c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
 @contextmanager
 def no_alsa_errors():
     try:
-        asound = cdll.LoadLibrary('libasound.so')
+        asound = cdll.LoadLibrary("libasound.so")
         asound.snd_lib_error_set_handler(c_error_handler)
         yield
         asound.snd_lib_error_set_handler(None)
@@ -38,7 +52,7 @@ def no_alsa_errors():
 
 # --- CONFIGURATION ---
 app = Flask(__name__)
-log = logging.getLogger('werkzeug')
+log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
 UNKNOWN_LABEL = "Unknown"
@@ -92,7 +106,10 @@ def load_student_data():
         if file.lower().endswith((".jpg", ".png", ".jpeg")):
             try:
                 img = face_recognition.load_image_file(os.path.join(path, file))
-                encodings = face_recognition.face_encodings(img)
+
+                # FIX 2: Lock all dlib calls
+                with fr_lock:
+                    encodings = face_recognition.face_encodings(img)
 
                 if encodings:
                     base = os.path.splitext(file)[0]
@@ -151,9 +168,14 @@ def save_denied_photo(frame, reason="unknown"):
         if frame is None:
             return False
 
-        # verify single face in the snapshot
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        locs = face_recognition.face_locations(rgb)
+
+        # FIX 2 + FIX 3: Lock + hog + no upsample
+        with fr_lock:
+            locs = face_recognition.face_locations(
+                rgb, number_of_times_to_upsample=0, model="hog"
+            )
+
         if len(locs) != 1:
             return False
 
@@ -203,7 +225,7 @@ def speak(text):
 
     if not os.path.exists(file_path):
         try:
-            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts = gTTS(text=text, lang="en", tld="co.uk")
             tts.save(file_path)
         except Exception as e:
             print(f" [ERROR] Could not generate TTS: {e}")
@@ -242,9 +264,9 @@ def listen_for_name():
             update_status("IDLE")
 
 # --- WEB SERVER ---
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
 def generate_frames():
     global video_frame
@@ -254,19 +276,19 @@ def generate_frames():
 
         if frame is not None:
             try:
-                ret, buffer = cv2.imencode('.jpg', frame)
+                ret, buffer = cv2.imencode(".jpg", frame)
                 if ret:
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
             except:
                 pass
 
         time.sleep(0.04)
 
-@app.route('/video_feed')
+@app.route("/video_feed")
 def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route('/status_feed')
+@app.route("/status_feed")
 def status_feed():
     def generate():
         while True:
@@ -390,7 +412,7 @@ def exam_logic_loop():
 def vision_loop():
     global video_frame, current_detected_name, current_face_count
 
-    print(" [VISION] Starting Camera...")
+    print(" [VISION] Starting Camera (USB/V4L2)...")
 
     pipelines = [
         "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
@@ -398,15 +420,21 @@ def vision_loop():
     ]
 
     cap = None
+    opened_with = None
     for pipeline in pipelines:
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER) if isinstance(pipeline, str) else cv2.VideoCapture(pipeline)
         if cap.isOpened():
-            print(f" [VISION] Camera opened with: {pipeline}")
+            opened_with = pipeline
             break
 
     if not cap or not cap.isOpened():
         print(" [ERROR] Could not open any camera.")
         return
+
+    if isinstance(opened_with, str):
+        print(" [VISION] Camera opened (GStreamer).")
+    else:
+        print(" [VISION] Camera opened (OpenCV V4L2): index 0")
 
     frame_count = 0
     cached_face_locations = []
@@ -421,12 +449,17 @@ def vision_loop():
 
             frame_count += 1
 
-            if frame_count % 5 == 0:
+            # FIX 3: Reduce Scan Frequency (was % 5)
+            if frame_count % 10 == 0:
                 small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
                 rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
-                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
-                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+                # FIX 2 + FIX 3: Lock + hog + no upsample
+                with fr_lock:
+                    cached_face_locations = face_recognition.face_locations(
+                        rgb_small_frame, number_of_times_to_upsample=0, model="hog"
+                    )
+                    face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations) if cached_face_locations else []
 
                 current_face_count = len(cached_face_locations)
 
@@ -442,8 +475,11 @@ def vision_loop():
                     name = UNKNOWN_LABEL
 
                     if known_face_encodings:
-                        matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
-                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                        # FIX 2: Lock compare + distance
+                        with fr_lock:
+                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+
                         if len(face_distances) > 0:
                             best = np.argmin(face_distances)
                             if matches[best]:
@@ -458,7 +494,7 @@ def vision_loop():
 
                 current_detected_name = detected_name
 
-            # Draw rectangles
+            # Draw rectangles from cached results
             for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
                 top *= 4; right *= 4; bottom *= 4; left *= 4
 
@@ -485,4 +521,5 @@ if __name__ == "__main__":
     load_student_data()
     threading.Thread(target=vision_loop, daemon=True).start()
     threading.Thread(target=exam_logic_loop, daemon=True).start()
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
