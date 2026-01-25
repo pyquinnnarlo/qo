@@ -1,14 +1,17 @@
 # ======================
-# ENTRIES APP (UPDATED)
-# Fix 2 + Fix 3 Applied:
-# - Force Native Single-Threading (OpenMP/OpenBLAS/etc) + OpenCV Single-Thread
-# - Serialize All face_recognition (dlib) Calls With A Global Lock (Fixes free(): invalid size In Multi-Thread Use)
-# - Use HOG Model + No Upsample + Reduce Scan Frequency
+# ENTRIES APP (FULL UPDATED - ACCURACY FIX)
+# Improvements Applied:
+# - Detect On Small Frame (Fast) But Encode On Full Frame (Accurate)
+# - Stricter Threshold + Winner Margin (Best Must Beat Runner-Up)
+# - Require N Consistent Hits Before Confirming Identity
+# - Use Unique Labels Name__ID (Speak/Display Only Name)
+# - Keep Native Single-Threading + OpenCV Single-Thread
+# - Serialize All face_recognition (dlib) Calls With A Global Lock
 # ======================
 
 import os
 
-# --- FIX 2: Prevent Native Thread Races (dlib/OpenMP/OpenBLAS) ---
+# --- Prevent Native Thread Races (dlib/OpenMP/OpenBLAS) ---
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -16,7 +19,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import threading
 import cv2
-cv2.setNumThreads(1)  # --- FIX 2: OpenCV Single-Thread ---
+cv2.setNumThreads(1)
 
 import speech_recognition as sr
 import time
@@ -31,7 +34,7 @@ from gtts import gTTS
 from ctypes import *
 from contextlib import contextmanager
 
-# --- FIX 2: Serialize All face_recognition (dlib) Calls ---
+# --- Serialize All face_recognition (dlib) Calls ---
 fr_lock = threading.Lock()
 
 # --- ALSA ERROR SUPPRESSION ---
@@ -58,6 +61,11 @@ log.setLevel(logging.ERROR)
 UNKNOWN_LABEL = "Unknown"
 MULTI_LABEL = "MULTIPLE"
 
+# --- RECOGNITION TUNING (IMPORTANT) ---
+MATCH_THRESHOLD = 0.43   # lower = stricter, reduces false positives
+MATCH_MARGIN    = 0.06   # best must beat runner-up by this margin
+CONFIRM_HITS    = 3      # same identity must win this many scans before accepted
+
 MIC_INDEX = None
 
 # Thread safety
@@ -67,10 +75,14 @@ db_lock = threading.Lock()
 # Global Variables
 video_frame = None
 known_face_encodings = []
-known_face_names = []   # normalized name_key
+known_face_names = []   # UNIQUE LABELS: Name__ID
 current_detected_name = None
 current_face_count = 0
 current_status = "SYSTEM READY"
+
+# Confirmation filter state
+candidate_label = None
+candidate_hits = 0
 
 # --- DB HELPERS (MATCH UPDATED REGISTRATION CODE) ---
 def _read_students_db(json_file="students.json"):
@@ -86,10 +98,16 @@ def _read_students_db(json_file="students.json"):
 def _normalize_name_key(name: str) -> str:
     return str(name).strip().lower().replace(" ", "_")
 
+def _display_name(label: str) -> str:
+    if not label:
+        return ""
+    base = label.split("__")[0] if "__" in label else label
+    return base.replace("_", " ")
+
 def load_student_data():
     """
     Loads face encodings from student_pics/Name__StudentID.jpeg
-    Stores recognition label as normalized name_key.
+    Stores recognition label as UNIQUE label: Name__ID (from filename base).
     """
     print(" [DB] Loading Student Faces...")
     global known_face_encodings, known_face_names
@@ -107,18 +125,15 @@ def load_student_data():
             try:
                 img = face_recognition.load_image_file(os.path.join(path, file))
 
-                # FIX 2: Lock all dlib calls
                 with fr_lock:
                     encodings = face_recognition.face_encodings(img)
 
                 if encodings:
                     base = os.path.splitext(file)[0]
-                    name_part = base.split("__")[0]
-                    name_key = _normalize_name_key(name_part)
-
+                    label = base  # UNIQUE: Name__ID
                     known_face_encodings.append(encodings[0])
-                    known_face_names.append(name_key)
-                    print(f"   + Loaded: {name_key}")
+                    known_face_names.append(label)
+                    print(f"   + Loaded: {label}")
                 else:
                     print(f"   - Warning: No face found in {file}")
             except Exception as e:
@@ -126,10 +141,39 @@ def load_student_data():
 
     print(f" [DB] System Ready. Known students: {len(known_face_names)}")
 
-def check_registration_by_face_name(face_name_key: str):
+def _best_match_label(new_enc: np.ndarray):
+    """
+    Returns (label or None, best_dist, second_best_dist)
+    Uses strict threshold + margin logic.
+    """
+    if not known_face_encodings:
+        return None, None, None
+
+    with fr_lock:
+        dists = face_recognition.face_distance(known_face_encodings, new_enc)
+
+    if len(dists) == 0:
+        return None, None, None
+
+    best_idx = int(np.argmin(dists))
+    best_dist = float(dists[best_idx])
+
+    if len(dists) > 1:
+        sorted_d = np.sort(dists)
+        second_best = float(sorted_d[1])
+    else:
+        second_best = 999.0
+
+    if (best_dist < MATCH_THRESHOLD) and ((second_best - best_dist) > MATCH_MARGIN):
+        return known_face_names[best_idx], best_dist, second_best
+
+    return None, best_dist, second_best
+
+def check_registration_by_face_label(face_label: str):
     """
     students.json is keyed by student_id in updated registration code.
-    For entries, we validate by matching record['name_key'].
+    For entries, validate by matching record['student_id'] (from label __ID).
+    Falls back to matching record['name_key'] if needed.
     """
     try:
         with db_lock:
@@ -138,11 +182,21 @@ def check_registration_by_face_name(face_name_key: str):
         if not db:
             return None
 
-        target = _normalize_name_key(face_name_key)
+        label = str(face_label)
+        student_id = None
+        if "__" in label:
+            student_id = label.split("__", 1)[1].strip()
+
+        # Primary: match by student_id (most reliable)
+        if student_id and student_id in db and isinstance(db[student_id], dict):
+            return bool(db[student_id].get("registered", False))
+
+        # Fallback: match by name_key if student_id missing
+        target_name_key = _normalize_name_key(label.split("__")[0] if "__" in label else label)
         for _, rec in db.items():
             if not isinstance(rec, dict):
                 continue
-            if _normalize_name_key(rec.get("name_key", "")) == target:
+            if _normalize_name_key(rec.get("name_key", "")) == target_name_key:
                 return bool(rec.get("registered", False))
 
         return None
@@ -152,7 +206,6 @@ def check_registration_by_face_name(face_name_key: str):
 
 # --- FRAME HELPERS ---
 def get_current_frame():
-    """Thread-safe snapshot of current frame."""
     with frame_lock:
         if video_frame is not None:
             return video_frame.copy()
@@ -162,7 +215,7 @@ def save_denied_photo(frame, reason="unknown"):
     """
     Saves a screenshot of the denied student for audit.
     - Saves full frame + metadata json sidecar.
-    - Only saves if exactly 1 face is present (prevents saving crowds).
+    - Only saves if exactly 1 face is present.
     """
     try:
         if frame is None:
@@ -170,7 +223,6 @@ def save_denied_photo(frame, reason="unknown"):
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # FIX 2 + FIX 3: Lock + hog + no upsample
         with fr_lock:
             locs = face_recognition.face_locations(
                 rgb, number_of_times_to_upsample=0, model="hog"
@@ -240,9 +292,6 @@ def speak(text):
     update_status(prev_status)
 
 def listen_for_name():
-    """
-    Kept for optional use, but DO NOT admit entry based on speech.
-    """
     update_status("LISTENING")
     speak("Face not recognized. Please state your name.")
 
@@ -343,11 +392,11 @@ def exam_logic_loop():
             speak("Multiple faces detected. One student at a time.")
             continue
 
-        name_key = current_detected_name  # normalized in vision loop
-        update_status(f"PROCESSING: {name_key}")
+        label = current_detected_name  # UNIQUE label: Name__ID
+        update_status(f"PROCESSING: {label}")
 
         # --- DENY IF NOT RECOGNIZED ---
-        if name_key == UNKNOWN_LABEL:
+        if label == UNKNOWN_LABEL:
             update_status("DENIED - NOT RECOGNIZED")
             snap = get_current_frame()
             save_denied_photo(snap, reason="not_recognized")
@@ -358,17 +407,16 @@ def exam_logic_loop():
             last_processed = "DENIED_UNKNOWN"
             last_processed_time = time.time()
 
-            # Wait for them to leave
             while current_detected_name == UNKNOWN_LABEL:
                 time.sleep(0.8)
 
             continue
 
         # If recognized but not in DB / not registered -> deny and snapshot
-        is_registered = check_registration_by_face_name(name_key)
+        is_registered = check_registration_by_face_label(label)
 
         if is_registered is True:
-            speak(f"Hello {name_key.replace('_', ' ')}.")
+            speak(f"Hello {_display_name(label)}.")
             time.sleep(0.2)
             speak("You are registered.")
 
@@ -382,28 +430,27 @@ def exam_logic_loop():
 
             speak("You may enter now.")
 
-            last_processed = name_key
+            last_processed = label
             last_processed_time = time.time()
 
-            while current_detected_name == name_key:
+            while current_detected_name == label:
                 time.sleep(1)
 
             speak("Next student.")
 
         else:
-            # Deny: either explicitly not registered (False) OR not found (None)
             reason = "not_registered" if is_registered is False else "not_found_in_db"
             update_status("DENIED - NOT REGISTERED")
             snap = get_current_frame()
             save_denied_photo(snap, reason=reason)
 
-            speak(f"Access denied. {name_key.replace('_', ' ')}, you are not registered.")
+            speak(f"Access denied. {_display_name(label)}, you are not registered.")
             speak("Please try again or contact the administration.")
 
-            last_processed = f"DENIED_{name_key}"
+            last_processed = f"DENIED_{label}"
             last_processed_time = time.time()
 
-            while current_detected_name == name_key:
+            while current_detected_name == label:
                 time.sleep(1)
 
         time.sleep(0.5)
@@ -411,6 +458,7 @@ def exam_logic_loop():
 # --- VISION LOOP ---
 def vision_loop():
     global video_frame, current_detected_name, current_face_count
+    global candidate_label, candidate_hits
 
     print(" [VISION] Starting Camera (USB/V4L2)...")
 
@@ -437,7 +485,7 @@ def vision_loop():
         print(" [VISION] Camera opened (OpenCV V4L2): index 0")
 
     frame_count = 0
-    cached_face_locations = []
+    cached_face_locations_small = []
     cached_face_names = []
 
     while True:
@@ -449,65 +497,85 @@ def vision_loop():
 
             frame_count += 1
 
-            # FIX 3: Reduce Scan Frequency (was % 5)
+            # Reduce Scan Frequency
             if frame_count % 10 == 0:
+                # Detect on small frame
                 small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
-                # FIX 2 + FIX 3: Lock + hog + no upsample
                 with fr_lock:
-                    cached_face_locations = face_recognition.face_locations(
-                        rgb_small_frame, number_of_times_to_upsample=0, model="hog"
+                    cached_face_locations_small = face_recognition.face_locations(
+                        rgb_small, number_of_times_to_upsample=0, model="hog"
                     )
-                    face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations) if cached_face_locations else []
 
-                current_face_count = len(cached_face_locations)
-
+                current_face_count = len(cached_face_locations_small)
                 cached_face_names = []
-                detected_name = None
 
                 if current_face_count > 1:
-                    detected_name = MULTI_LABEL
+                    current_detected_name = MULTI_LABEL
                     cached_face_names = [MULTI_LABEL] * current_face_count
+                    candidate_label = None
+                    candidate_hits = 0
 
-                elif current_face_count == 1 and face_encodings:
-                    face_encoding = face_encodings[0]
+                elif current_face_count == 1:
+                    # Convert small-loc -> full-loc
+                    (t, r, b, l) = cached_face_locations_small[0]
+                    full_loc = (t*4, r*4, b*4, l*4)
+
+                    # Encode on FULL frame for accuracy
+                    rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    with fr_lock:
+                        encs_full = face_recognition.face_encodings(rgb_full, [full_loc])
+
                     name = UNKNOWN_LABEL
+                    if encs_full and known_face_encodings:
+                        label, _, _ = _best_match_label(encs_full[0])
+                        if label is not None:
+                            name = label
 
-                    if known_face_encodings:
-                        # FIX 2: Lock compare + distance
-                        with fr_lock:
-                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
-                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                    # Confirmation filter
+                    if name == UNKNOWN_LABEL:
+                        candidate_label = None
+                        candidate_hits = 0
+                        current_detected_name = UNKNOWN_LABEL
+                        cached_face_names = [UNKNOWN_LABEL]
+                    else:
+                        if candidate_label == name:
+                            candidate_hits += 1
+                        else:
+                            candidate_label = name
+                            candidate_hits = 1
 
-                        if len(face_distances) > 0:
-                            best = np.argmin(face_distances)
-                            if matches[best]:
-                                name = known_face_names[best]
-
-                    detected_name = name
-                    cached_face_names = [name]
+                        if candidate_hits >= CONFIRM_HITS:
+                            current_detected_name = name
+                            cached_face_names = [name]
+                        else:
+                            current_detected_name = UNKNOWN_LABEL
+                            cached_face_names = [UNKNOWN_LABEL]
 
                 else:
-                    detected_name = None
+                    current_detected_name = None
                     cached_face_names = []
+                    candidate_label = None
+                    candidate_hits = 0
 
-                current_detected_name = detected_name
-
-            # Draw rectangles from cached results
-            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
+            # Draw rectangles from cached results (scale from small to full)
+            for (top, right, bottom, left), name in zip(cached_face_locations_small, cached_face_names):
                 top *= 4; right *= 4; bottom *= 4; left *= 4
 
                 if name == MULTI_LABEL:
                     color = (0, 165, 255)
-                    label = "MULTIPLE"
+                    label_txt = "MULTIPLE"
                 else:
-                    color = (0, 255, 0) if name != UNKNOWN_LABEL else (0, 0, 255)
-                    label = str(name)
+                    color = (0, 255, 0) if name not in (UNKNOWN_LABEL, None) else (0, 0, 255)
+                    if name not in (UNKNOWN_LABEL, None, MULTI_LABEL):
+                        label_txt = _display_name(str(name))
+                    else:
+                        label_txt = UNKNOWN_LABEL if name == UNKNOWN_LABEL else ""
 
                 cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                 cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
-                cv2.putText(frame, label, (left + 6, bottom - 6),
+                cv2.putText(frame, label_txt, (left + 6, bottom - 6),
                             cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
 
             with frame_lock:
@@ -522,4 +590,3 @@ if __name__ == "__main__":
     threading.Thread(target=vision_loop, daemon=True).start()
     threading.Thread(target=exam_logic_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
-
