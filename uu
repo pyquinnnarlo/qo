@@ -1,2 +1,125 @@
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install --no-cache-dir face-recognition-models
+def vision_loop():
+    global video_frame, current_detected_name, current_face_count
+
+    print(" [VISION] Starting Camera (USB/V4L2)...")
+
+    # --- USB CAMERA CONFIG ---
+    # Most USB cams show up as /dev/video0, /dev/video1, etc.
+    USB_DEVICE = os.getenv("USB_CAM_DEVICE", "/dev/video0")  # e.g. "/dev/video1"
+    WIDTH = int(os.getenv("CAM_WIDTH", "640"))
+    HEIGHT = int(os.getenv("CAM_HEIGHT", "480"))
+    FPS = int(os.getenv("CAM_FPS", "15"))
+
+    # USB cams commonly output MJPEG; provide both MJPEG and raw fallbacks.
+    pipelines = [
+        # 1) USB MJPEG via GStreamer (often best for Logitech/cheap USB cams)
+        f"v4l2src device={USB_DEVICE} ! image/jpeg,width={WIDTH},height={HEIGHT},framerate={FPS}/1 "
+        f"! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false",
+
+        # 2) USB raw YUY2 via GStreamer
+        f"v4l2src device={USB_DEVICE} ! video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1 "
+        f"! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false",
+
+        # 3) OpenCV V4L2 backend by index (fallback)
+        ("OPENCV_V4L2_INDEX_0", 0),
+    ]
+
+    cap = None
+
+    # Try GStreamer pipelines first
+    for p in pipelines[:2]:
+        cap = cv2.VideoCapture(p, cv2.CAP_GSTREAMER)
+        if cap.isOpened():
+            print(f" [VISION] Camera opened (GStreamer): {p}")
+            break
+        cap.release()
+
+    # Fallback: OpenCV V4L2 index 0
+    if not cap or not cap.isOpened():
+        cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        if cap.isOpened():
+            print(" [VISION] Camera opened (OpenCV V4L2): index 0")
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+            cap.set(cv2.CAP_PROP_FPS, FPS)
+
+    if not cap or not cap.isOpened():
+        print(f" [ERROR] Could not open USB camera. Tried {USB_DEVICE} and index 0.")
+        return
+
+    frame_count = 0
+    cached_face_locations = []
+    cached_face_names = []
+
+    while True:
+        try:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                time.sleep(0.1)
+                continue
+
+            frame_count += 1
+
+            if frame_count % 5 == 0:
+                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+                cached_face_locations = face_recognition.face_locations(rgb_small_frame)
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, cached_face_locations)
+
+                current_face_count = len(cached_face_locations)
+
+                cached_face_names = []
+                detected_name = None
+
+                if current_face_count > 1:
+                    detected_name = MULTI_LABEL
+                    cached_face_names = [MULTI_LABEL] * current_face_count
+
+                elif current_face_count == 1 and face_encodings:
+                    face_encoding = face_encodings[0]
+                    name = UNKNOWN_LABEL
+
+                    if known_face_encodings:
+                        matches = face_recognition.compare_faces(
+                            known_face_encodings, face_encoding, tolerance=0.5
+                        )
+                        face_distances = face_recognition.face_distance(
+                            known_face_encodings, face_encoding
+                        )
+                        if len(face_distances) > 0:
+                            best = np.argmin(face_distances)
+                            if matches[best]:
+                                name = known_face_names[best]
+
+                    detected_name = name
+                    cached_face_names = [name]
+
+                else:
+                    detected_name = None
+                    cached_face_names = []
+
+                current_detected_name = detected_name
+
+            # Draw rectangles
+            for (top, right, bottom, left), name in zip(cached_face_locations, cached_face_names):
+                top *= 4; right *= 4; bottom *= 4; left *= 4
+
+                if name == MULTI_LABEL:
+                    color = (0, 165, 255)
+                    label = "MULTIPLE"
+                else:
+                    color = (0, 255, 0) if name != UNKNOWN_LABEL else (0, 0, 255)
+                    label = str(name)
+
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+                cv2.putText(frame, label, (left + 6, bottom - 6),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+            with frame_lock:
+                video_frame = frame.copy()
+
+        except Exception as e:
+            print(f" [VISION WARNING] {e}")
+            time.sleep(0.1)
