@@ -1,11 +1,23 @@
 # =========================
 # REGISTRATION APP (UPDATED)
-# Multi-Face Blocking Added
+# Fix 2 + Fix 3 Applied:
+# - Force Native Single-Threading (OpenMP/OpenBLAS/etc) + OpenCV Single-Thread
+# - Serialize All face_recognition (dlib) Calls With A Global Lock
+# - Use HOG Model + No Upsample + Reduce Scan Frequency
 # =========================
+
+import os
+
+# --- FIX 2: Prevent Native Thread Races (dlib/OpenMP/OpenBLAS) ---
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import threading
 import cv2
-import os
+cv2.setNumThreads(1)  # --- FIX 2: OpenCV Single-Thread ---
+
 import time
 import json
 import face_recognition
@@ -18,7 +30,7 @@ from gtts import gTTS
 
 # --- CONFIGURATION ---
 app = Flask(__name__)
-log = logging.getLogger('werkzeug')
+log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
 UNKNOWN_LABEL = "Unknown"
@@ -28,6 +40,9 @@ MULTI_LABEL = "MULTIPLE"  # internal label for multi-face state
 video_frame = None
 frame_lock = threading.Lock()  # Mutex for frame access
 db_lock = threading.Lock()     # Mutex for students.json + known_face_* updates
+
+# --- FIX 2: Serialize All face_recognition (dlib) Calls ---
+fr_lock = threading.Lock()
 
 known_face_encodings = []
 known_face_names = []
@@ -74,7 +89,9 @@ def load_student_data():
         if file.lower().endswith((".jpg", ".png", ".jpeg")):
             try:
                 img = face_recognition.load_image_file(os.path.join(path, file))
-                encs = face_recognition.face_encodings(img)
+                # FIX 2: Lock dlib calls
+                with fr_lock:
+                    encs = face_recognition.face_encodings(img)
                 if encs:
                     base = os.path.splitext(file)[0]
                     display_name = base.split("__")[0]  # Name__ID -> Name
@@ -101,13 +118,22 @@ def save_new_student(name, student_id, frame):
 
         # Face encoding from captured frame (convert BGR -> RGB)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        locs = face_recognition.face_locations(rgb_frame)
+
+        # FIX 2 + FIX 3: Lock + hog + no upsample
+        with fr_lock:
+            locs = face_recognition.face_locations(
+                rgb_frame, number_of_times_to_upsample=0, model="hog"
+            )
+
         if len(locs) != 1:
             if len(locs) == 0:
                 return False, "No face found. Try again."
             return False, "Multiple faces detected. One student at a time."
 
-        new_encs = face_recognition.face_encodings(rgb_frame, locs)
+        # FIX 2: Lock encodings
+        with fr_lock:
+            new_encs = face_recognition.face_encodings(rgb_frame, locs)
+
         if not new_encs:
             return False, "Face not clear. Try again."
         new_enc = new_encs[0]
@@ -123,7 +149,9 @@ def save_new_student(name, student_id, frame):
 
             # 2) Duplicate face check
             if known_face_encodings:
-                matches = face_recognition.compare_faces(known_face_encodings, new_enc, tolerance=0.45)
+                # FIX 2: Lock compare
+                with fr_lock:
+                    matches = face_recognition.compare_faces(known_face_encodings, new_enc, tolerance=0.45)
                 if True in matches:
                     idx = matches.index(True)
                     existing_label = known_face_names[idx] if idx < len(known_face_names) else "student"
@@ -193,7 +221,7 @@ def speak(text):
         os.makedirs("audio_cache")
     if not os.path.exists(file_path):
         try:
-            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts = gTTS(text=text, lang="en", tld="co.uk")
             tts.save(file_path)
         except:
             return
@@ -208,11 +236,11 @@ def update_status(status):
     current_status = status
 
 # --- FLASK ---
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('register.html')
+    return render_template("register.html")
 
-@app.route('/video_feed')
+@app.route("/video_feed")
 def video_feed():
     def generate():
         while True:
@@ -220,14 +248,14 @@ def video_feed():
                 frame = video_frame.copy() if video_frame is not None else None
 
             if frame is not None:
-                ret, buf = cv2.imencode('.jpg', frame)
+                ret, buf = cv2.imencode(".jpg", frame)
                 if ret:
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
 
             time.sleep(0.05)
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route('/status_feed')
+@app.route("/status_feed")
 def status_feed():
     def generate():
         while True:
@@ -235,12 +263,12 @@ def status_feed():
             time.sleep(0.2)
     return Response(generate(), mimetype="text/event-stream")
 
-@app.route('/register_student', methods=['POST'])
+@app.route("/register_student", methods=["POST"])
 def register_student():
     global pending_registration_data
     data = request.json or {}
 
-    if not data.get('name') or not data.get('id'):
+    if not data.get("name") or not data.get("id"):
         return jsonify({"status": "error"}), 400
 
     if pending_registration_data is not None:
@@ -333,7 +361,13 @@ def logic_loop():
 
         # HARD BLOCK: confirm exactly 1 face in the captured frame
         rgb_cap = cv2.cvtColor(registration_frame_buffer, cv2.COLOR_BGR2RGB)
-        cap_locs = face_recognition.face_locations(rgb_cap)
+
+        # FIX 2 + FIX 3: Lock + hog + no upsample
+        with fr_lock:
+            cap_locs = face_recognition.face_locations(
+                rgb_cap, number_of_times_to_upsample=0, model="hog"
+            )
+
         if len(cap_locs) != 1:
             update_status("CAPTURE INVALID")
             if len(cap_locs) == 0:
@@ -360,8 +394,8 @@ def logic_loop():
                 break
 
         if pending_registration_data:
-            name = pending_registration_data['name']
-            sid = pending_registration_data['id']
+            name = pending_registration_data["name"]
+            sid = pending_registration_data["id"]
 
             update_status("SAVING...")
             ok, msg = save_new_student(name, sid, registration_frame_buffer)
@@ -413,11 +447,17 @@ def vision_loop():
 
         frame_count += 1
 
-        if scan_active and frame_count % 5 == 0:
+        # FIX 3: Reduce Scan Frequency (Was % 5)
+        if scan_active and frame_count % 10 == 0:
             small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-            locs = face_recognition.face_locations(rgb)
+            # FIX 2 + FIX 3: Lock + hog + no upsample
+            with fr_lock:
+                locs = face_recognition.face_locations(
+                    rgb, number_of_times_to_upsample=0, model="hog"
+                )
+
             current_face_count = len(locs)
 
             # scale locs to full size for drawing/lighting
@@ -429,12 +469,18 @@ def vision_loop():
             if current_face_count > 1:
                 current_detected_name = MULTI_LABEL
             elif current_face_count == 1:
-                encs = face_recognition.face_encodings(rgb, locs)
+                # FIX 2: Lock encodings
+                with fr_lock:
+                    encs = face_recognition.face_encodings(rgb, locs)
+
                 name = UNKNOWN_LABEL
                 if encs and known_face_encodings:
                     enc = encs[0]
-                    matches = face_recognition.compare_faces(known_face_encodings, enc, tolerance=0.5)
-                    dists = face_recognition.face_distance(known_face_encodings, enc)
+                    # FIX 2: Lock compare + distance
+                    with fr_lock:
+                        matches = face_recognition.compare_faces(known_face_encodings, enc, tolerance=0.5)
+                        dists = face_recognition.face_distance(known_face_encodings, enc)
+
                     if len(dists) > 0:
                         best = np.argmin(dists)
                         if matches[best]:
@@ -464,4 +510,5 @@ if __name__ == "__main__":
     load_student_data()
     threading.Thread(target=vision_loop, daemon=True).start()
     threading.Thread(target=logic_loop, daemon=True).start()
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
