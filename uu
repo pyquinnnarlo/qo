@@ -1,587 +1,88 @@
-# =========================
-# REGISTRATION APP (FULL UPDATED - ANTI-MISIDENTIFICATION)
-# Improvements Applied:
-# - Detect On Small Frame (Fast) But Encode On Full Frame (Accurate)
-# - Label-Aggregated Matching Support (Multiple Encodings Per Student Label)
-# - Threshold + Winner Margin (Best Must Beat Runner-Up)
-# - Require N Consistent Hits Before Confirming Identity
-# - Use Unique Labels Name__ID (Speak/Display Only Name)
-# - Keep Native Single-Threading + OpenCV Single-Thread
-# - Serialize All face_recognition (dlib) Calls With A Global Lock
-# =========================
+obot: Hello abraham h sheriff.
+Robot: You are registered.
+Robot: Attention. Please listen to the exam rules.
+Error on request:
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 334, in execute
+    write(data)
+    ~~~~~^^^^^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 307, in write
+    self.wfile.write(b"\r\n")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/usr/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 370, in run_wsgi
+    execute(self.server.app)
+    ~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 367, in execute
+    application_iter.close()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/wsgi.py", line 260, in close
+    callback()
+    ~~~~~~~~^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/wrappers/response.py", line 403, in close
+    self.response.close()
+    ~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: generator ignored GeneratorExit
+Exception ignored in: <generator object generate_frames at 0x7fff951047c0>
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 393, in run_wsgi
+    self.server.log("error", f"Error on request:\n{msg}")
+RuntimeError: generator ignored GeneratorExit
+Robot: No phones or smart watches are allowed in the exam hall or during the exam.
+Robot: Failure to follow these rules will result in the dismissal of the test.
+Robot: You may enter now.
+Robot: Next student.
+Robot: Hi. Look directly at the camera. Remove anything covering your face.
+Robot: Access denied. You are not recognized.
+Robot: Please try again. If the problem continues, contact the administration.
+Error on request:
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 334, in execute
+    write(data)
+    ~~~~~^^^^^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 307, in write
+    self.wfile.write(b"\r\n")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/usr/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 370, in run_wsgi
+    execute(self.server.app)
+    ~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 367, in execute
+    application_iter.close()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/wsgi.py", line 260, in close
+    callback()
+    ~~~~~~~~^^
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/wrappers/response.py", line 403, in close
+    self.response.close()
+    ~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: generator ignored GeneratorExit
+Exception ignored in: <generator object generate_frames at 0x7fff9506e4d0>
+Traceback (most recent call last):
+  File "/home/fyplg/Desktop/pi/venv/lib/python3.13/site-packages/werkzeug/serving.py", line 393, in run_wsgi
+    self.server.log("error", f"Error on request:\n{msg}")
+RuntimeError: generator ignored GeneratorExit
+Robot: Hi. Look directly at the camera. Remove anything covering your face.
+ [DENIED] Saved: denied_pics/DENIED_not_recognized_20260127_133157.jpg
+Robot: Access denied. You are not recognized.
+Robot: Please try again. If the problem continues, contact the administration.
+Robot: Hi. Look directly at the camera. Remove anything covering your face.
+ [DENIED] Saved: denied_pics/DENIED_not_recognized_20260127_133206.jpg
+Robot: Access denied. You are not recognized.
+Robot: Please try again. If the problem continues, contact the administration.
 
-import os
 
-# --- Prevent Native Thread Races (dlib/OpenMP/OpenBLAS) ---
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
-import threading
-import cv2
-cv2.setNumThreads(1)
-
-import time
-import json
-import face_recognition
-import numpy as np
-import logging
-import hashlib
-import subprocess
-from flask import Flask, render_template, Response, request, jsonify
-from gtts import gTTS
-
-# --- CONFIGURATION ---
-app = Flask(__name__)
-log = logging.getLogger("werkzeug")
-log.setLevel(logging.ERROR)
-
-UNKNOWN_LABEL = "Unknown"
-MULTI_LABEL = "MULTIPLE"  # internal label for multi-face state
-
-# --- RECOGNITION TUNING (MATCH ENTRIES) ---
-MATCH_THRESHOLD = 0.45   # effective tolerance
-MATCH_MARGIN    = 0.08   # best must beat runner-up by this margin
-CONFIRM_HITS    = 4      # stability
-
-# Global Variables
-video_frame = None
-frame_lock = threading.Lock()
-db_lock = threading.Lock()
-
-# Serialize all face_recognition (dlib) calls
-fr_lock = threading.Lock()
-
-# Store MULTIPLE encodings per label
-known_face_encodings_by_label = {}  # { "Name__ID": [enc1, enc2, ...] }
-known_labels = []
-
-current_detected_name = None
-current_face_location = None
-current_face_locations = []
-current_face_count = 0
-current_status = "SYSTEM READY"
-
-# Confirmation state
-candidate_label = None
-candidate_hits = 0
-
-# Flags
-scan_active = True
-pending_registration_data = None
-registration_frame_buffer = None
-
-# --- DB HELPERS ---
-def _read_students_db(json_file="students.json"):
-    if not os.path.exists(json_file):
-        return {}
-    try:
-        with open(json_file, "r") as f:
-            content = f.read().strip()
-            return json.loads(content) if content else {}
-    except:
-        return {}
-
-def _sanitize_id(student_id: str) -> str:
-    sid = str(student_id).strip()
-    sid = "".join(ch for ch in sid if ch.isalnum() or ch in ("-", "_"))
-    return sid or "UNKNOWN_ID"
-
-def _display_name(label: str) -> str:
-    if not label:
-        return ""
-    return (label.split("__")[0] if "__" in label else label).replace("_", " ")
-
-def _label_from_filename_base(base: str) -> str:
-    if "__" in base:
-        parts = base.split("__")
-        if len(parts) >= 2:
-            return "__".join(parts[:2])  # Name__ID
-        return base
-    return base
-
-# --- DATABASE ---
-def load_student_data():
-    print(" [DB] Loading Student Faces...")
-    global known_face_encodings_by_label, known_labels
-    known_face_encodings_by_label = {}
-    known_labels = []
-
-    path = "student_pics"
-    if not os.path.exists(path):
-        os.makedirs(path)
-
-    for file in os.listdir(path):
-        if not file.lower().endswith((".jpg", ".png", ".jpeg")):
-            continue
-
-        try:
-            img_path = os.path.join(path, file)
-            img = face_recognition.load_image_file(img_path)
-
-            base = os.path.splitext(file)[0]
-            label = _label_from_filename_base(base)
-
-            with fr_lock:
-                encs = face_recognition.face_encodings(img)
-
-            if not encs:
-                continue
-
-            if label not in known_face_encodings_by_label:
-                known_face_encodings_by_label[label] = []
-                known_labels.append(label)
-
-            known_face_encodings_by_label[label].append(encs[0])
-            print(f"   + Loaded: {file} -> {label} (imgs: {len(known_face_encodings_by_label[label])})")
-        except:
-            pass
-
-def _best_match_label(new_enc: np.ndarray):
-    if not known_labels:
-        return None, None, None
-
-    best_label = None
-    best_dist = 999.0
-    second_best = 999.0
-
-    with fr_lock:
-        for label in known_labels:
-            enc_list = known_face_encodings_by_label.get(label, [])
-            if not enc_list:
-                continue
-            dists = face_recognition.face_distance(enc_list, new_enc)
-            if len(dists) == 0:
-                continue
-            d = float(np.min(dists))
-
-            if d < best_dist:
-                second_best = best_dist
-                best_dist = d
-                best_label = label
-            elif d < second_best:
-                second_best = d
-
-    if best_label is None:
-        return None, None, None
-
-    if (best_dist < MATCH_THRESHOLD) and ((second_best - best_dist) > MATCH_MARGIN):
-        return best_label, best_dist, second_best
-
-    return None, best_dist, second_best
-
-def save_new_student(name, student_id, frame):
-    """
-    Prevent duplicate registration by:
-      1) student_id already exists in students.json
-      2) captured face already matches an existing label (strict aggregated match)
-      3) multi-face / no-face capture is blocked
-    Save image as Name__ID__<timestamp>.jpeg so each student can have multiple images.
-    """
-    try:
-        if frame is None:
-            return False, "Camera frame missing."
-
-        clean_name = name.strip().replace(" ", "_")
-        sid_clean = _sanitize_id(student_id)
-        label = f"{clean_name}__{sid_clean}"
-
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        with fr_lock:
-            locs = face_recognition.face_locations(rgb_frame, number_of_times_to_upsample=0, model="hog")
-        if len(locs) != 1:
-            if len(locs) == 0:
-                return False, "No face found. Try again."
-            return False, "Multiple faces detected. One student at a time."
-
-        with fr_lock:
-            new_encs = face_recognition.face_encodings(rgb_frame, locs)
-        if not new_encs:
-            return False, "Face not clear. Try again."
-        new_enc = new_encs[0]
-
-        with db_lock:
-            json_file = "students.json"
-            db = _read_students_db(json_file)
-
-            # 1) Duplicate ID check
-            if sid_clean in db:
-                existing_name = db[sid_clean].get("full_name") or db[sid_clean].get("name_key") or "student"
-                return False, f"Duplicate blocked: ID already registered for {existing_name}."
-
-            # 2) Duplicate face check (strict aggregated)
-            existing_label, _, _ = _best_match_label(new_enc)
-            if existing_label is not None:
-                return False, f"Duplicate blocked: Face already registered as {_display_name(existing_label)}."
-
-            if not os.path.exists("student_pics"):
-                os.makedirs("student_pics")
-
-            # Save MULTIPLE images per student label
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            img_path = f"student_pics/{label}__{ts}.jpeg"
-            cv2.imwrite(img_path, frame)
-
-            # DB keyed by student_id
-            db[sid_clean] = {
-                "full_name": name,
-                "student_id": sid_clean,
-                "name_key": clean_name,
-                "image_path": img_path,
-                "registered": True,
-                "timestamp": time.time()
-            }
-
-            with open(json_file, "w") as f:
-                json.dump(db, f, indent=4)
-
-            # Update in-memory encodings
-            if label not in known_face_encodings_by_label:
-                known_face_encodings_by_label[label] = []
-                known_labels.append(label)
-            known_face_encodings_by_label[label].append(new_enc)
-
-        return True, "Registration saved."
-    except Exception as e:
-        print(f" [ERROR] Save failed: {e}")
-        return False, "Save failed due to an internal error."
-
-# --- UTILS ---
-def get_current_frame():
-    with frame_lock:
-        if video_frame is not None:
-            return video_frame.copy()
-    return None
-
-def check_lighting(frame, face_loc):
-    if frame is None or face_loc is None:
-        return False, 0
-    try:
-        top, right, bottom, left = face_loc
-        h, w, _ = frame.shape
-        top = max(0, top); left = max(0, left)
-        bottom = min(h, bottom); right = min(w, right)
-
-        face_roi = frame[top:bottom, left:right]
-        if face_roi.size == 0:
-            return False, 0
-
-        gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
-        avg_brightness = float(np.mean(gray))
-        return avg_brightness > 50, avg_brightness
-    except:
-        return False, 0
-
-def speak(text):
-    global current_status
-    print(f"Robot: {text}")
-    filename = hashlib.md5(text.encode()).hexdigest() + ".mp3"
-    file_path = f"audio_cache/{filename}"
-
-    if not os.path.exists("audio_cache"):
-        os.makedirs("audio_cache")
-    if not os.path.exists(file_path):
-        try:
-            tts = gTTS(text=text, lang="en", tld="co.uk")
-            tts.save(file_path)
-        except:
-            return
-
-    try:
-        subprocess.run(["mpg123", "-q", file_path], timeout=6)
-    except Exception:
-        pass
-
-def update_status(status):
-    global current_status
-    current_status = status
-
-# --- FLASK ---
-@app.route("/")
-def index():
-    return render_template("register.html")
-
-@app.route("/video_feed")
-def video_feed():
-    def generate():
-        while True:
-            with frame_lock:
-                frame = video_frame.copy() if video_frame is not None else None
-
-            if frame is not None:
-                ret, buf = cv2.imencode(".jpg", frame)
-                if ret:
-                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
-
-            time.sleep(0.05)
-    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
-
-@app.route("/status_feed")
-def status_feed():
-    def generate():
-        while True:
-            yield f"data: {current_status}\n\n"
-            time.sleep(0.2)
-    return Response(generate(), mimetype="text/event-stream")
-
-@app.route("/register_student", methods=["POST"])
-def register_student():
-    global pending_registration_data
-    data = request.json or {}
-
-    if not data.get("name") or not data.get("id"):
-        return jsonify({"status": "error"}), 400
-
-    if pending_registration_data is not None:
-        return jsonify({"status": "busy", "message": "Registration already pending."}), 409
-
-    pending_registration_data = data
-    return jsonify({"status": "received"}), 200
-
-# --- LOGIC LOOP ---
-def logic_loop():
-    global current_detected_name, pending_registration_data, registration_frame_buffer
-    global current_face_location, current_face_count, scan_active
-
-    time.sleep(2)
-    speak("System Online.")
-
-    last_multi_warn = 0
-
-    while True:
-        update_status("WAITING FOR STUDENT")
-        scan_active = True
-
-        if current_detected_name is None:
-            time.sleep(0.5)
-            continue
-
-        # MULTI-FACE BLOCK
-        if current_detected_name == MULTI_LABEL or current_face_count > 1:
-            update_status("MULTIPLE FACES - ONE STUDENT ONLY")
-            if time.time() - last_multi_warn > 6:
-                speak("Multiple faces detected. One student at a time. Please step back.")
-                last_multi_warn = time.time()
-            while current_face_count > 1:
-                time.sleep(0.5)
-            continue
-
-        detected = current_detected_name
-
-        # KNOWN STUDENT
-        if detected != UNKNOWN_LABEL:
-            display = _display_name(detected)
-            update_status(f"WELCOME BACK {display}")
-            speak(f"Hello {display}.")
-            time.sleep(1)
-            while current_detected_name is not None:
-                time.sleep(0.5)
-            continue
-
-        # NEW STUDENT
-        update_status("NEW STUDENT DETECTED")
-        speak("Hello. I do not recognize you.")
-        time.sleep(0.5)
-
-        if current_face_count != 1:
-            update_status("ONE FACE REQUIRED")
-            speak("One student only. Please make sure only one face is in view.")
-            while current_face_count != 1:
-                time.sleep(0.5)
-            continue
-
-        update_status("PREPARING FOR PHOTO")
-        speak("Please look directly at the camera.")
-        time.sleep(0.5)
-        speak("Please remove any hats, glasses, or hair covering your face.")
-        time.sleep(3)
-
-        if current_face_count != 1:
-            update_status("MULTIPLE FACES - CAPTURE BLOCKED")
-            speak("Multiple faces detected. Capture blocked. One student at a time.")
-            continue
-
-        frame_snapshot = get_current_frame()
-        if frame_snapshot is not None and current_face_location is not None:
-            is_bright, _ = check_lighting(frame_snapshot, current_face_location)
-            if not is_bright:
-                update_status("LIGHTING TOO DARK")
-                speak("The lighting is too dark. Please find better light.")
-                time.sleep(3)
-                continue
-
-        speak("Hold still.")
-        time.sleep(1.0)
-
-        registration_frame_buffer = get_current_frame()
-        if registration_frame_buffer is None:
-            speak("Camera error.")
-            continue
-
-        # confirm exactly 1 face in captured frame
-        rgb_cap = cv2.cvtColor(registration_frame_buffer, cv2.COLOR_BGR2RGB)
-        with fr_lock:
-            cap_locs = face_recognition.face_locations(rgb_cap, number_of_times_to_upsample=0, model="hog")
-
-        if len(cap_locs) != 1:
-            update_status("CAPTURE INVALID")
-            if len(cap_locs) == 0:
-                speak("No face found. Please try again.")
-            else:
-                speak("Multiple faces detected. One student at a time.")
-            registration_frame_buffer = None
-            continue
-
-        speak("Face captured.")
-        update_status("CAPTURED - PAUSING VISION")
-
-        scan_active = False
-        time.sleep(0.5)
-
-        speak("Please enter your Name and ID on the screen.")
-        update_status("INPUT REQUIRED")
-
-        timer = 0
-        while pending_registration_data is None:
-            time.sleep(0.5)
-            timer += 1
-            if timer > 120:
-                break
-
-        if pending_registration_data:
-            name = pending_registration_data["name"]
-            sid = pending_registration_data["id"]
-
-            update_status("SAVING...")
-            ok, msg = save_new_student(name, sid, registration_frame_buffer)
-            if ok:
-                update_status("REGISTRATION COMPLETE")
-                speak("Registration successful. Thank you.")
-            else:
-                update_status("REGISTRATION BLOCKED")
-                speak(msg)
-
-            pending_registration_data = None
-            registration_frame_buffer = None
-
-            scan_active = True
-            speak("Please step aside.")
-            while current_detected_name is not None:
-                time.sleep(1)
-        else:
-            update_status("TIMEOUT")
-            speak("Registration timed out. Resetting.")
-            pending_registration_data = None
-            registration_frame_buffer = None
-            scan_active = True
-            time.sleep(2)
-
-# --- VISION LOOP ---
-def vision_loop():
-    global video_frame, current_detected_name
-    global current_face_location, current_face_locations, current_face_count, scan_active
-    global candidate_label, candidate_hits
-
-    pipelines = [
-        "libcamerasrc ! video/x-raw, width=640, height=480, framerate=15/1, format=YUY2 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false",
-        0
-    ]
-
-    cap = None
-    for pipeline in pipelines:
-        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER) if isinstance(pipeline, str) else cv2.VideoCapture(pipeline)
-        if cap.isOpened():
-            break
-
-    frame_count = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.1)
-            continue
-
-        frame_count += 1
-
-        if scan_active and frame_count % 10 == 0:
-            small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-            rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-
-            with fr_lock:
-                locs_small = face_recognition.face_locations(rgb_small, number_of_times_to_upsample=0, model="hog")
-
-            current_face_count = len(locs_small)
-
-            scaled_locs = [(t*4, r*4, b*4, l*4) for (t, r, b, l) in locs_small]
-            current_face_locations = scaled_locs
-            current_face_location = scaled_locs[0] if scaled_locs else None
-
-            if current_face_count > 1:
-                current_detected_name = MULTI_LABEL
-                candidate_label = None
-                candidate_hits = 0
-
-            elif current_face_count == 1:
-                (t, r, b, l) = locs_small[0]
-                full_loc = (t*4, r*4, b*4, l*4)
-
-                rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                with fr_lock:
-                    encs_full = face_recognition.face_encodings(rgb_full, [full_loc])
-
-                name = UNKNOWN_LABEL
-                if encs_full and known_labels:
-                    label, _, _ = _best_match_label(encs_full[0])
-                    if label is not None:
-                        name = label
-
-                if name == UNKNOWN_LABEL:
-                    candidate_label = None
-                    candidate_hits = 0
-                    current_detected_name = UNKNOWN_LABEL
-                else:
-                    if candidate_label == name:
-                        candidate_hits += 1
-                    else:
-                        candidate_label = name
-                        candidate_hits = 1
-
-                    if candidate_hits >= CONFIRM_HITS:
-                        current_detected_name = name
-                    else:
-                        current_detected_name = UNKNOWN_LABEL
-
-            else:
-                current_detected_name = None
-                candidate_label = None
-                candidate_hits = 0
-
-        # Draw boxes (re-use last)
-        if current_face_locations:
-            for (top, right, bottom, left) in current_face_locations:
-                if current_face_count > 1 or current_detected_name == MULTI_LABEL:
-                    color = (0, 165, 255)
-                    label_txt = "MULTIPLE"
-                else:
-                    color = (0, 255, 0) if current_detected_name not in (None, UNKNOWN_LABEL) else (0, 0, 255)
-                    if current_detected_name and current_detected_name not in (UNKNOWN_LABEL, MULTI_LABEL):
-                        label_txt = _display_name(str(current_detected_name))
-                    elif current_detected_name == UNKNOWN_LABEL:
-                        label_txt = UNKNOWN_LABEL
-                    else:
-                        label_txt = ""
-
-                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                if label_txt:
-                    cv2.putText(frame, label_txt, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        with frame_lock:
-            video_frame = frame.copy()
-
-if __name__ == "__main__":
-    load_student_data()
-    threading.Thread(target=vision_loop, daemon=True).start()
-    threading.Thread(target=logic_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
