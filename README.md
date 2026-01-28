@@ -32,5 +32,3 @@ pip install pocketsphinx
 
 
 ```
-![Abraham_Sheriff__89610](https://github.com/user-attachments/assets/532533fb-0489-4b04-8578-dc1e86316f1d)
-
