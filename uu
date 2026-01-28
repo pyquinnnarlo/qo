@@ -1,7 +1,5 @@
 espeak "System online"
 mpg123 -q /usr/share/sounds/alsa/Front_Center.wav
 
-sudo apt update
-sudo apt install -y mpg123 espeak
-
-sudo apt install -y alsa-utils
+Your input can't be opened:
+VLC is unable to open the MRL 'file:///home/fyplg/Desktop/pi/audio_cache/ad18ebdd042182f3d5040722e2355739.mp3'. Check the log for details.
